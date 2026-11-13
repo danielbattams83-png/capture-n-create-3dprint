@@ -444,9 +444,6 @@ export default function Home() {
             <Sparkles aria-hidden="true" className="size-3.5 text-[#60a5fa]" />
             For the space between ideas and inventions
           </div>
-          <button type="button" className="mx-5 mb-4 self-end rounded-full border border-[#e8e9e3] px-4 py-2 text-xs font-semibold text-[#4c5049] transition hover:border-[#c8cbc2] hover:bg-[#fafaf8] sm:mx-0 sm:mb-0">
-            How it works
-          </button>
         </div>
       </header>
 
