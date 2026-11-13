@@ -28,3 +28,9 @@ Open [http://localhost:3000](http://localhost:3000).
 Uploads are limited to four JPG, PNG, or WebP images, each up to 20 MB. For multi-image generation, photos should show the same object from different angles; the first image is treated as the front view. Meshy validates image dimensions and may reject unsupported images. Polling tokens are signed server-side to prevent arbitrary task lookups, and cross-origin browser requests are rejected. The dimensions panel is currently a UI setting; it does not resize the generated model.
 
 The in-browser viewer uses React Three Fiber and Drei for orbit, zoom, and pan controls. The GLB is streamed through the server to avoid browser cross-origin restrictions when loading Meshy assets. Its grid represents a 220 × 220 mm printer bed; the GLB preview and binary STL export use the configured X, Y, and Z dimensions. STL-only output can still be downloaded but cannot be previewed or rescaled in the browser.
+
+## Taking photos
+
+Click the empty upload area or **Choose photos** to select existing images. **Take a photo** opens a live camera preview (preferring the rear camera on phones); allow camera access and press **Capture photo** to add a JPG to the same four-photo selection. Close the camera or press Escape to cancel. Camera tracks stop when capturing, closing, or switching to the device camera.
+
+Camera access requires HTTPS (or localhost) and browser permission. If access is denied or no webcam is available, the dialog explains how to recover. **Use device camera instead** opens the native camera app on supported phones; on other devices it may open the file picker. Camera photos have the same format, size, and four-photo limits as uploads.

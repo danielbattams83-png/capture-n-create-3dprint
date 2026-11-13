@@ -4,6 +4,7 @@ import Image from "next/image";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useDropzone } from "react-dropzone";
+import CameraCapture from "@/components/camera-capture";
 import type { ModelExportAction } from "@/components/model-viewer";
 
 const ModelViewer = dynamic(() => import("@/components/model-viewer"), {
@@ -89,6 +90,7 @@ function CheckIcon() {
 }
 
 export default function Home() {
+  const [cameraOpen, setCameraOpen] = useState(false);
   const [images, setImages] = useState<SelectedImage[]>([]);
   const [status, setStatus] = useState<GenerationStatus>("idle");
   const [error, setError] = useState("");
@@ -285,8 +287,13 @@ export default function Home() {
     }
   };
 
+  const photoControlsDisabled = images.length >= 4 || status === "uploading" || status === "generating";
+
   const onDrop = (acceptedFiles: File[], rejectedFiles: { file: File }[]) => {
-    if (rejectedFiles.length > 0) {
+    if (photoControlsDisabled) return;
+    if (rejectedFiles.length > 0 || acceptedFiles.some((file) =>
+      !["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 20 * 1024 * 1024
+    )) {
       setError("Choose up to four JPG, PNG, or WebP images, each smaller than 20 MB.");
       return;
     }
@@ -322,7 +329,10 @@ export default function Home() {
     maxFiles: 4,
     maxSize: 20 * 1024 * 1024,
     multiple: true,
-    noClick: true,
+    // Only the empty area opens the picker; model controls and thumbnails stay interactive.
+    noClick: images.length > 0,
+    noKeyboard: images.length > 0,
+    disabled: photoControlsDisabled,
   });
 
   const removeImage = (indexToRemove: number) => {
@@ -428,7 +438,7 @@ export default function Home() {
             <div className="p-4 sm:p-6">
               <div
                 {...getRootProps({
-                  className: `relative flex min-h-[300px] cursor-pointer flex-col items-center justify-center overflow-hidden rounded-2xl border border-dashed transition sm:min-h-[368px] ${
+                  className: `relative flex min-h-[300px] ${images.length === 0 && !photoControlsDisabled ? "cursor-pointer" : ""} flex-col items-center justify-center overflow-hidden rounded-2xl border border-dashed transition sm:min-h-[368px] ${
                     isDragActive ? "border-[#91ad42] bg-[#f3f7e9]" : "border-[#dfe2d9] bg-[#fafbf8] hover:border-[#aab987] hover:bg-[#f8faf4]"
                   }`,
                 })}
@@ -502,6 +512,7 @@ export default function Home() {
                           event.stopPropagation();
                           open();
                         }}
+                        disabled={photoControlsDisabled}
                         className="flex aspect-square flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[#dfe2d9] bg-white/70 text-xs font-medium text-[#78816a] transition hover:border-[#aab987] hover:bg-white"
                       >
                         <span className="text-xl leading-none">+</span>
@@ -518,10 +529,36 @@ export default function Home() {
                       {isDragActive ? "Drop it here to get started" : "Drop your photo here"}
                     </p>
                     <p className="mt-2 text-sm text-[#8b8e86]">or choose up to four photos from different angles</p>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        open();
+                      }}
+                      disabled={photoControlsDisabled}
+                      className="mt-4 rounded-xl bg-[#29352b] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#394a36] disabled:opacity-50"
+                    >
+                      Choose photos
+                    </button>
                     <span className="mt-5 rounded-full border border-[#e9eae5] bg-white px-3 py-1.5 text-[11px] font-medium text-[#777b73]">JPG, PNG, WEBP <span className="mx-1 text-[#d0d2cb]">·</span> 20 MB each <span className="mx-1 text-[#d0d2cb]">·</span> up to 4 images</span>
                   </div>
                 )}
               </div>
+
+              <button
+                type="button"
+                onClick={() => setCameraOpen(true)}
+                disabled={photoControlsDisabled}
+                className="mt-4 w-full rounded-xl border border-[#dfe4d5] bg-white px-4 py-3 text-sm font-semibold text-[#536344] transition hover:bg-[#f8faf4] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Take a photo
+              </button>
+              {cameraOpen && (
+                <CameraCapture
+                  onCapture={(file) => onDrop([file], [])}
+                  onClose={() => setCameraOpen(false)}
+                />
+              )}
 
               {error && <p role="alert" className="mt-3 text-xs font-medium text-[#b34e3a]">{error}</p>}
 
@@ -531,7 +568,7 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={() => open()}
-                    disabled={images.length >= 4 || status === "uploading" || status === "generating"}
+                    disabled={photoControlsDisabled}
                     className="rounded-lg border border-[#e8e9e3] bg-white px-3 py-2 text-xs font-semibold text-[#59634b] transition hover:bg-[#f8faf4] disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     Add photos
@@ -682,7 +719,7 @@ export default function Home() {
             <button
               type="button"
               onClick={open}
-              disabled={images.length >= 4 || status === "uploading" || status === "generating"}
+              disabled={photoControlsDisabled}
               className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl border border-[#dfe4d5] bg-white px-4 py-3 text-sm font-semibold text-[#536344] transition hover:bg-[#f8faf4] disabled:cursor-not-allowed disabled:opacity-50"
             >
               <PhotoIcon />
