@@ -19,6 +19,11 @@ type GenerationStatus = "idle" | "uploading" | "generating" | "ready" | "error";
 type PrintDimension = "x" | "y" | "z";
 type ModelUrls = { glb?: string; stl?: string };
 type SelectedImage = { file: File; previewUrl: string };
+type PreviewTask = {
+  taskId: string;
+  taskType: "image-to-3d" | "multi-image-to-3d";
+  taskToken: string;
+};
 
 const stages: { id: Exclude<GenerationStatus, "idle" | "error">; label: string }[] = [
   { id: "uploading", label: "Uploading image" },
@@ -90,9 +95,13 @@ export default function Home() {
   const [exportError, setExportError] = useState("");
   const [progress, setProgress] = useState(0);
   const [modelUrls, setModelUrls] = useState<ModelUrls | null>(null);
+  const [previewModelUrl, setPreviewModelUrl] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [exportModel, setExportModel] = useState<ModelExportAction | null>(null);
   const activeRequest = useRef<AbortController | null>(null);
   const previewUrls = useRef<string[]>([]);
+  const previewTask = useRef<PreviewTask | null>(null);
   const [dimensions, setDimensions] = useState<Record<PrintDimension, string>>({
     x: "100",
     y: "100",
@@ -103,9 +112,65 @@ export default function Home() {
     return () => previewUrls.current.forEach((url) => URL.revokeObjectURL(url));
   }, []);
 
+  useEffect(() => {
+    if (!previewModelUrl) return;
+    return () => URL.revokeObjectURL(previewModelUrl);
+  }, [previewModelUrl]);
+
   const registerExportModel = useCallback((action: ModelExportAction | null) => {
     setExportModel(() => action);
   }, []);
+
+  const loadModelPreview = async (task: PreviewTask, signal: AbortSignal) => {
+    setPreviewLoading(true);
+    setPreviewError("");
+    setPreviewModelUrl(null);
+
+    try {
+      const response = await fetch("/api/model-preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          task_id: task.taskId,
+          task_type: task.taskType,
+          task_token: task.taskToken,
+        }),
+        signal,
+      });
+      if (!response.ok) {
+        const result = await readJson(response);
+        throw new Error(getApiError(result) ?? "Could not download the model for preview.");
+      }
+
+      const modelBlob = await response.blob();
+      if (modelBlob.size === 0) {
+        throw new Error("Meshy returned an empty model file.");
+      }
+      if (!signal.aborted) {
+        setPreviewModelUrl(URL.createObjectURL(modelBlob));
+      }
+    } catch (previewLoadError) {
+      if (!signal.aborted) {
+        setPreviewError(
+          previewLoadError instanceof Error
+            ? previewLoadError.message
+            : "Could not load the 3D preview. You can still download the generated file.",
+        );
+      }
+    } finally {
+      if (!signal.aborted) setPreviewLoading(false);
+    }
+  };
+
+  const retryModelPreview = async () => {
+    if (!previewTask.current) return;
+
+    activeRequest.current?.abort();
+    const controller = new AbortController();
+    activeRequest.current = controller;
+    await loadModelPreview(previewTask.current, controller.signal);
+    if (activeRequest.current === controller) activeRequest.current = null;
+  };
 
   const startGeneration = async (selectedImages: SelectedImage[]) => {
     if (selectedImages.length === 0) return;
@@ -116,6 +181,10 @@ export default function Home() {
     setError("");
     setExportError("");
     setModelUrls(null);
+    setPreviewModelUrl(null);
+    setPreviewError("");
+    setPreviewLoading(false);
+    previewTask.current = null;
     setExportModel(null);
     setProgress(0);
     setStatus("uploading");
@@ -146,6 +215,8 @@ export default function Home() {
       const taskId = createResult.task_id;
       const taskType = createResult.task_type;
       const taskToken = createResult.task_token;
+      const task: PreviewTask = { taskId, taskType, taskToken };
+      previewTask.current = task;
       setStatus("generating");
       const startedAt = Date.now();
 
@@ -193,6 +264,7 @@ export default function Home() {
           setModelUrls({ glb, stl });
           setProgress(100);
           setStatus("ready");
+          if (glb) await loadModelPreview(task, controller.signal);
           return;
         }
       }
@@ -229,6 +301,10 @@ export default function Home() {
     setError("");
     setExportError("");
     setModelUrls(null);
+    setPreviewModelUrl(null);
+    setPreviewError("");
+    setPreviewLoading(false);
+    previewTask.current = null;
     setExportModel(null);
     setProgress(0);
     setStatus("idle");
@@ -263,6 +339,10 @@ export default function Home() {
     setError("");
     setExportError("");
     setModelUrls(null);
+    setPreviewModelUrl(null);
+    setPreviewError("");
+    setPreviewLoading(false);
+    previewTask.current = null;
     setExportModel(null);
   };
 
@@ -286,6 +366,10 @@ export default function Home() {
     setExportError("");
     setProgress(0);
     setModelUrls(null);
+    setPreviewModelUrl(null);
+    setPreviewError("");
+    setPreviewLoading(false);
+    previewTask.current = null;
     setExportModel(null);
   };
 
@@ -350,15 +434,39 @@ export default function Home() {
                 })}
               >
                 <input {...getInputProps()} />
-                {status === "ready" && modelUrls?.glb ? (
+                {status === "ready" && modelUrls?.glb && previewModelUrl ? (
                   <ModelViewer
-                    modelUrl={modelUrls.glb}
+                    modelUrl={previewModelUrl}
                     width={getDimensionValue("x")}
                     depth={getDimensionValue("y")}
                     height={getDimensionValue("z")}
                     onExportReady={registerExportModel}
                     onExportError={setExportError}
+                    onRetry={() => void retryModelPreview()}
                   />
+                ) : status === "ready" && modelUrls?.glb ? (
+                  <div
+                    className="flex min-h-[340px] w-full flex-col items-center justify-center px-6 text-center sm:min-h-[420px]"
+                    role="status"
+                  >
+                    <CubeIcon className="size-8 text-[#91a66a]" />
+                    <p className="mt-4 text-sm font-semibold text-[#505747]">
+                      {previewLoading ? "Loading your 3D preview…" : "Preview unavailable"}
+                    </p>
+                    <p className="mt-2 max-w-sm text-xs leading-5 text-[#898d84]">
+                      {previewError ||
+                        "The model is ready. You can still download it while the preview loads."}
+                    </p>
+                    {!previewLoading && previewError && (
+                      <button
+                        type="button"
+                        onClick={() => void retryModelPreview()}
+                        className="mt-4 rounded-lg border border-[#dfe2d9] bg-white px-3 py-2 text-xs font-semibold text-[#536b2d] shadow-sm transition hover:bg-[#f3f5ed]"
+                      >
+                        Retry preview
+                      </button>
+                    )}
+                  </div>
                 ) : images.length > 0 ? (
                   <div className="grid w-full grid-cols-2 gap-3 p-4 sm:grid-cols-4 sm:p-5">
                     {images.map(({ file, previewUrl }, index) => (

@@ -17,10 +17,12 @@ type ModelViewerProps = {
   height: number;
   onExportReady: (exportModel: ModelExportAction | null) => void;
   onExportError: (message: string) => void;
+  onRetry: () => void;
 };
 
 type ViewerErrorBoundaryProps = {
   children: ReactNode;
+  onRetry: () => void;
 };
 
 type ViewerErrorBoundaryState = {
@@ -48,8 +50,15 @@ class ViewerErrorBoundary extends Component<
           <div>
             <p className="text-sm font-semibold text-[#505747]">Preview unavailable</p>
             <p className="mt-2 text-xs leading-5 text-[#898d84]">
-              The model could not be displayed. You can still download the generated file below.
+              The model could not be displayed. You can retry the preview or download the generated file below.
             </p>
+            <button
+              type="button"
+              onClick={this.props.onRetry}
+              className="mt-4 rounded-lg border border-[#dfe2d9] bg-white px-3 py-2 text-xs font-semibold text-[#536b2d] shadow-sm transition hover:bg-[#f3f5ed]"
+            >
+              Retry preview
+            </button>
           </div>
         </div>
       );
@@ -66,7 +75,7 @@ function LoadedModel({
   height,
   onExportReady,
   onExportError,
-}: ModelViewerProps) {
+}: Omit<ModelViewerProps, "onRetry">) {
   const { scene } = useGLTF(modelUrl);
   const modelRef = useRef<Group>(null);
   const normalized = useMemo(() => {
@@ -138,9 +147,10 @@ export default function ModelViewer({
   height,
   onExportReady,
   onExportError,
+  onRetry,
 }: ModelViewerProps) {
   return (
-    <ViewerErrorBoundary key={modelUrl}>
+    <ViewerErrorBoundary key={modelUrl} onRetry={onRetry}>
       <div className="relative h-[360px] min-h-[340px] w-full overflow-hidden rounded-2xl bg-[#f7f8f4] sm:h-[420px]">
         <Canvas
           dpr={[1, 1.5]}
