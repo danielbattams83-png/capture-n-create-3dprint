@@ -8,6 +8,7 @@ import { Box, Check, LockKeyhole, Plus, Sparkles, UploadCloud, X } from "lucide-
 import type { ModelExportAction } from "@/components/model-viewer";
 import ScalingPreview from "@/components/scaling-preview";
 import CameraCapture from "@/components/camera-capture";
+import GenerationModal from "@/components/generation-modal";
 
 const ModelViewer = dynamic(() => import("@/components/model-viewer"), {
   ssr: false,
@@ -67,7 +68,9 @@ const dimensionLabels: Record<PrintDimension, string> = {
 export default function Home() {
   const [cameraOpen, setCameraOpen] = useState(false);
   const [images, setImages] = useState<SelectedImage[]>([]);
+  const [generationModalOpen, setGenerationModalOpen] = useState(false);
   const [status, setStatus] = useState<GenerationStatus>("idle");
+  const [failedStage, setFailedStage] = useState<"uploading" | "generating" | null>(null);
   const [error, setError] = useState("");
   const [exportError, setExportError] = useState("");
   const [progress, setProgress] = useState(0);
@@ -186,6 +189,8 @@ export default function Home() {
   const startGeneration = async (selectedImages: SelectedImage[]) => {
     if (selectedImages.length === 0) return;
 
+    let activeStage: "uploading" | "generating" = "uploading";
+    setGenerationModalOpen(true);
     activeRequest.current?.abort();
     const controller = new AbortController();
     activeRequest.current = controller;
@@ -198,6 +203,7 @@ export default function Home() {
     previewTask.current = null;
     setExportModel(null);
     setProgress(0);
+    setFailedStage(null);
     setStatus("uploading");
 
     try {
@@ -228,6 +234,7 @@ export default function Home() {
       const taskToken = createResult.task_token;
       const task: PreviewTask = { taskId, taskType, taskToken };
       previewTask.current = task;
+      activeStage = "generating";
       setStatus("generating");
       const startedAt = Date.now();
 
@@ -288,6 +295,7 @@ export default function Home() {
           ? generationError.message
           : "An unexpected error occurred during model generation.",
       );
+      setFailedStage(activeStage);
       setStatus("error");
     } finally {
       if (activeRequest.current === controller) {
@@ -329,6 +337,7 @@ export default function Home() {
     previewTask.current = null;
     setExportModel(null);
     setProgress(0);
+    setFailedStage(null);
     setStatus("idle");
     const addedImages = acceptedFiles.map((file) => ({
       file,
@@ -359,6 +368,8 @@ export default function Home() {
     if (indexToRemove === 0) setAspectRatio(null);
     activeRequest.current?.abort();
     activeRequest.current = null;
+    setGenerationModalOpen(false);
+    setFailedStage(null);
     setStatus("idle");
     setProgress(0);
     setError("");
@@ -413,7 +424,9 @@ export default function Home() {
     previewUrls.current.forEach((url) => URL.revokeObjectURL(url));
     previewUrls.current = [];
     setImages([]);
+    setGenerationModalOpen(false);
     setAspectRatio(null);
+    setFailedStage(null);
     setStatus("idle");
     setError("");
     setExportError("");
@@ -427,6 +440,7 @@ export default function Home() {
   };
 
   return (
+    <>
     <main className="min-h-screen bg-[#f7f7f5] text-[#20211f]">
       <header className="border-b border-[#e9e9e5] bg-white/80">
         <div className="mx-auto flex max-w-7xl flex-col items-stretch sm:h-[192px] sm:flex-row sm:items-center sm:justify-between sm:px-8">
@@ -462,7 +476,7 @@ export default function Home() {
         </div>
 
         <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1.65fr)_minmax(320px,0.85fr)]">
-          <section className="overflow-hidden rounded-[22px] border border-[#e8e9e4] bg-white shadow-[0_8px_30px_rgba(27,31,24,0.035)]">
+          <section id="model-preview" className="overflow-hidden rounded-[22px] border border-[#e8e9e4] bg-white shadow-[0_8px_30px_rgba(27,31,24,0.035)]">
             <div className="flex items-center justify-between border-b border-[#efefec] px-5 py-4 sm:px-7">
               <div>
                 <h2 className="text-sm font-semibold">{status === "ready" && modelUrls?.glb ? "3D model preview" : "Your photos"}</h2>
@@ -627,7 +641,7 @@ export default function Home() {
                 </div>
               )}
 
-              {images.length > 0 && status !== "idle" && (
+              {images.length > 0 && status !== "idle" && !generationModalOpen && (
                 <div className="mt-5 rounded-xl bg-[#f8f9f5] px-4 py-4 sm:px-5">
                   <div className="mb-4 flex items-center justify-between">
                     <div>
@@ -801,5 +815,61 @@ export default function Home() {
         </footer>
       </div>
     </main>
+    {status !== "idle" && !generationModalOpen && (
+      <button
+        type="button"
+        onClick={() => setGenerationModalOpen(true)}
+        className="fixed bottom-4 right-4 z-40 inline-flex items-center gap-2 rounded-full border border-[#3b82f6]/50 bg-[#14171d] px-4 py-3 text-xs font-semibold text-[#f3f4f6] shadow-[0_8px_30px_rgba(0,0,0,0.35)] transition hover:border-[#60a5fa] hover:bg-[#1b2029] sm:bottom-6 sm:right-6"
+        aria-label={
+          status === "generating"
+            ? `View generation progress, ${progress}%`
+            : "View generation details"
+        }
+      >
+        {status === "ready" ? (
+          <Check aria-hidden="true" className="size-4 text-[#60a5fa]" />
+        ) : status === "error" ? (
+          <X aria-hidden="true" className="size-4 text-[#fda4af]" />
+        ) : (
+          <Sparkles aria-hidden="true" className="size-4 text-[#60a5fa]" />
+        )}
+        {status === "uploading"
+          ? "Uploading photos"
+          : status === "generating"
+            ? `Generating · ${progress}%`
+            : status === "ready"
+              ? "View model details"
+              : "View generation error"}
+      </button>
+    )}
+    <GenerationModal
+      open={generationModalOpen}
+      images={images}
+      status={status}
+      failedStage={failedStage}
+      progress={progress}
+      error={error}
+      dimensions={{
+        width: dimensions.x,
+        depth: dimensions.y,
+        height: dimensions.z,
+      }}
+      modelUrls={modelUrls}
+      exportReady={Boolean(exportModel)}
+      onClose={() => setGenerationModalOpen(false)}
+      onRetry={() => void startGeneration(images)}
+      onExport={() => exportModel?.()}
+      onViewModel={() => {
+        setGenerationModalOpen(false);
+        window.setTimeout(
+          () =>
+            document
+              .getElementById("model-preview")
+              ?.scrollIntoView({ behavior: "smooth", block: "center" }),
+          0,
+        );
+      }}
+    />
+    </>
   );
 }
