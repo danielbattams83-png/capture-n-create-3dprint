@@ -4,13 +4,15 @@ import Image from "next/image";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useDropzone } from "react-dropzone";
-import CameraCapture from "@/components/camera-capture";
+import { Box, Check, LockKeyhole, Plus, Sparkles, UploadCloud, X } from "lucide-react";
 import type { ModelExportAction } from "@/components/model-viewer";
+import ScalingPreview from "@/components/scaling-preview";
+import CameraCapture from "@/components/camera-capture";
 
 const ModelViewer = dynamic(() => import("@/components/model-viewer"), {
   ssr: false,
   loading: () => (
-    <div className="flex h-[360px] items-center justify-center rounded-2xl bg-[#f7f8f4] text-xs font-medium text-[#7b8173] sm:h-[420px]">
+    <div className="flex h-[360px] items-center justify-center rounded-2xl bg-[#0b0d10] font-mono text-xs font-medium text-[#9ca3af] sm:h-[420px]">
       Preparing 3D preview…
     </div>
   ),
@@ -62,33 +64,6 @@ const dimensionLabels: Record<PrintDimension, string> = {
   z: "Height",
 };
 
-function PhotoIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" className="size-6">
-      <rect x="3" y="4" width="18" height="16" rx="3" stroke="currentColor" strokeWidth="1.6" />
-      <circle cx="8.5" cy="9" r="1.5" fill="currentColor" />
-      <path d="m5 17 4.5-4 3 2.5 2.5-2 4 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function CubeIcon({ className = "size-5" }: { className?: string }) {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" className={className}>
-      <path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-      <path d="m4.5 7.7 7.5 4.4 7.5-4.4M12 12.1V21" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function CheckIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20" fill="none" className="size-3.5">
-      <path d="m4 10 4 4 8-8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
 export default function Home() {
   const [cameraOpen, setCameraOpen] = useState(false);
   const [images, setImages] = useState<SelectedImage[]>([]);
@@ -101,13 +76,14 @@ export default function Home() {
   const [previewError, setPreviewError] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [exportModel, setExportModel] = useState<ModelExportAction | null>(null);
+  const [aspectRatio, setAspectRatio] = useState<number | null>(null);
   const activeRequest = useRef<AbortController | null>(null);
   const previewUrls = useRef<string[]>([]);
   const previewTask = useRef<PreviewTask | null>(null);
   const [dimensions, setDimensions] = useState<Record<PrintDimension, string>>({
     x: "100",
-    y: "100",
-    z: "3",
+    y: "3",
+    z: "100",
   });
 
   useEffect(() => {
@@ -122,6 +98,39 @@ export default function Home() {
   const registerExportModel = useCallback((action: ModelExportAction | null) => {
     setExportModel(() => action);
   }, []);
+
+  const handleAspectRatioChange = useCallback((ratio: number) => {
+    if (!Number.isFinite(ratio) || ratio <= 0) return;
+    setAspectRatio(ratio);
+    setDimensions((current) => {
+      const maxHeight = Math.max(1, Math.min(250, Math.floor(250 / ratio)));
+      const height = Math.min(maxHeight, Number(current.z) || 100);
+      return {
+        ...current,
+        x: String(Math.round(height * ratio)),
+        z: String(height),
+      };
+    });
+  }, []);
+
+  const handlePreviewHeightChange = useCallback(
+    (height: number) => {
+      const maxHeight = aspectRatio
+        ? Math.max(1, Math.min(250, Math.floor(250 / aspectRatio)))
+        : 250;
+      const boundedHeight = Math.min(maxHeight, Math.max(1, height));
+      setDimensions((current) => ({
+        ...current,
+        x: String(
+          aspectRatio
+            ? Math.round(boundedHeight * aspectRatio)
+            : Number(current.x) || 100,
+        ),
+        z: String(boundedHeight),
+      }));
+    },
+    [aspectRatio],
+  );
 
   const loadModelPreview = async (task: PreviewTask, signal: AbortSignal) => {
     setPreviewLoading(true);
@@ -146,7 +155,7 @@ export default function Home() {
 
       const modelBlob = await response.blob();
       if (modelBlob.size === 0) {
-        throw new Error("Meshy returned an empty model file.");
+        throw new Error("The generation service returned an empty model file.");
       }
       if (!signal.aborted) {
         setPreviewModelUrl(URL.createObjectURL(modelBlob));
@@ -245,7 +254,7 @@ export default function Home() {
         }
 
         if (pollResult.status === "FAILED" || pollResult.status === "CANCELED") {
-          throw new Error(getApiError(pollResult) ?? "Meshy could not generate this model.");
+          throw new Error(getApiError(pollResult) ?? "The generation service could not create this model.");
         }
 
         if (
@@ -287,19 +296,25 @@ export default function Home() {
     }
   };
 
-  const photoControlsDisabled = images.length >= 4 || status === "uploading" || status === "generating";
+  const photoControlsDisabled =
+    images.length >= 4 || status === "uploading" || status === "generating";
 
   const onDrop = (acceptedFiles: File[], rejectedFiles: { file: File }[]) => {
     if (photoControlsDisabled) return;
-    if (rejectedFiles.length > 0 || acceptedFiles.some((file) =>
-      !["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 20 * 1024 * 1024
-    )) {
+    if (
+      rejectedFiles.length > 0 ||
+      acceptedFiles.some(
+        (file) =>
+          !["image/jpeg", "image/png", "image/webp"].includes(file.type) ||
+          file.size > 20 * 1024 * 1024,
+      )
+    ) {
       setError("Choose up to four JPG, PNG, or WebP images, each smaller than 20 MB.");
       return;
     }
     if (acceptedFiles.length === 0) return;
     if (images.length + acceptedFiles.length > 4) {
-      setError("Meshy supports up to four photos of the same object.");
+      setError("Up to four photos of the same object can be selected.");
       return;
     }
 
@@ -329,7 +344,6 @@ export default function Home() {
     maxFiles: 4,
     maxSize: 20 * 1024 * 1024,
     multiple: true,
-    // Only the empty area opens the picker; model controls and thumbnails stay interactive.
     noClick: images.length > 0,
     noKeyboard: images.length > 0,
     disabled: photoControlsDisabled,
@@ -342,6 +356,7 @@ export default function Home() {
       previewUrls.current = previewUrls.current.filter((url) => url !== removed.previewUrl);
     }
     setImages((current) => current.filter((_, index) => index !== indexToRemove));
+    if (indexToRemove === 0) setAspectRatio(null);
     activeRequest.current?.abort();
     activeRequest.current = null;
     setStatus("idle");
@@ -357,6 +372,33 @@ export default function Home() {
   };
 
   const updateDimension = (dimension: PrintDimension, value: string) => {
+    if (aspectRatio && dimension === "x" && value !== "") {
+      const width = Number(value);
+      if (Number.isFinite(width) && width > 0) {
+        const maxHeight = Math.max(1, Math.min(250, Math.floor(250 / aspectRatio)));
+        const height = Math.max(1, Math.min(maxHeight, width / aspectRatio));
+        setDimensions((current) => ({
+          ...current,
+          x: String(Math.round(height * aspectRatio)),
+          z: String(height),
+        }));
+        return;
+      }
+    }
+
+    if (aspectRatio && dimension === "z" && value !== "") {
+      const maxHeight = Math.max(1, Math.min(250, Math.floor(250 / aspectRatio)));
+      const height = Math.max(1, Math.min(maxHeight, Number(value)));
+      if (Number.isFinite(height) && height > 0) {
+        setDimensions((current) => ({
+          ...current,
+          x: String(Math.round(height * aspectRatio)),
+          z: String(height),
+        }));
+        return;
+      }
+    }
+
     setDimensions((current) => ({ ...current, [dimension]: value }));
   };
 
@@ -371,6 +413,7 @@ export default function Home() {
     previewUrls.current.forEach((url) => URL.revokeObjectURL(url));
     previewUrls.current = [];
     setImages([]);
+    setAspectRatio(null);
     setStatus("idle");
     setError("");
     setExportError("");
@@ -397,9 +440,9 @@ export default function Home() {
               className="block h-auto w-full object-contain sm:w-[232px]"
             />
           </a>
-          <div className="hidden items-center gap-2 text-xs font-medium text-[#787c74] sm:flex">
-            <span className="size-1.5 rounded-full bg-[#a5c848]" />
-            Your ideas, made tangible
+          <div className="hidden items-center gap-2 text-right text-xs font-medium tracking-wide text-[#9ca3af] sm:flex">
+            <Sparkles aria-hidden="true" className="size-3.5 text-[#60a5fa]" />
+            For the space between ideas and inventions
           </div>
           <button type="button" className="mx-5 mb-4 self-end rounded-full border border-[#e8e9e3] px-4 py-2 text-xs font-semibold text-[#4c5049] transition hover:border-[#c8cbc2] hover:bg-[#fafaf8] sm:mx-0 sm:mb-0">
             How it works
@@ -414,7 +457,7 @@ export default function Home() {
             Capture &amp; Create
           </div>
           <h1 className="text-[clamp(2.2rem,5vw,3.8rem)] font-semibold leading-[1.05] tracking-[-0.065em]">
-            A photo, made <span className="text-[#8eaa43]">three-dimensional.</span>
+            A photo, made <span className="text-[#60a5fa]">three-dimensional.</span>
           </h1>
           <p className="mt-4 max-w-xl text-[15px] leading-7 text-[#777a73] sm:text-base">
             Turn a favorite image into a print-ready relief. Add a photo, set your size, and we&apos;ll shape it for you.
@@ -432,14 +475,14 @@ export default function Home() {
                     : "Upload up to four views of the same object"}
                 </p>
               </div>
-              <span className="rounded-full bg-[#f3f5ed] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-[#7b8e4a]">Step 01</span>
+              <span className="rounded-full bg-[#17243a] px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.1em] text-[#60a5fa]">Step 01</span>
             </div>
 
             <div className="p-4 sm:p-6">
               <div
                 {...getRootProps({
-                  className: `relative flex min-h-[300px] ${images.length === 0 && !photoControlsDisabled ? "cursor-pointer" : ""} flex-col items-center justify-center overflow-hidden rounded-2xl border border-dashed transition sm:min-h-[368px] ${
-                    isDragActive ? "border-[#91ad42] bg-[#f3f7e9]" : "border-[#dfe2d9] bg-[#fafbf8] hover:border-[#aab987] hover:bg-[#f8faf4]"
+                  className: `relative flex min-h-[300px] cursor-pointer flex-col items-center justify-center overflow-hidden rounded-2xl border border-dashed transition sm:min-h-[368px] ${
+                    isDragActive ? "border-[#3b82f6] bg-[#17243a]" : "border-[#232832] bg-[#0b0d10] hover:border-[#3b82f6] hover:bg-[#14171d]"
                   }`,
                 })}
               >
@@ -459,7 +502,7 @@ export default function Home() {
                     className="flex min-h-[340px] w-full flex-col items-center justify-center px-6 text-center sm:min-h-[420px]"
                     role="status"
                   >
-                    <CubeIcon className="size-8 text-[#91a66a]" />
+                    <Box aria-hidden="true" className="size-8 text-[#60a5fa]" />
                     <p className="mt-4 text-sm font-semibold text-[#505747]">
                       {previewLoading ? "Loading your 3D preview…" : "Preview unavailable"}
                     </p>
@@ -489,7 +532,7 @@ export default function Home() {
                           className="object-cover"
                           sizes="(max-width: 640px) 45vw, 20vw"
                         />
-                        <span className="absolute bottom-2 left-2 rounded-md bg-black/55 px-2 py-1 text-[10px] font-medium text-white">
+                        <span className="absolute bottom-2 left-2 rounded-md bg-black/55 px-2 py-1 font-mono text-[10px] font-medium text-white">
                           View {index + 1}
                         </span>
                         <button
@@ -499,9 +542,9 @@ export default function Home() {
                             event.stopPropagation();
                             removeImage(index);
                           }}
-                          className="absolute right-2 top-2 flex size-7 items-center justify-center rounded-full bg-white/95 text-sm font-semibold text-[#50544d] opacity-100 shadow-sm transition hover:bg-white sm:opacity-0 sm:group-hover:opacity-100"
+                          className="absolute right-2 top-2 flex size-7 items-center justify-center rounded-full bg-[#14171d]/95 text-sm font-semibold text-[#f3f4f6] opacity-100 shadow-sm transition hover:bg-[#232832] sm:opacity-0 sm:group-hover:opacity-100"
                         >
-                          ×
+                          <X aria-hidden="true" className="size-4" />
                         </button>
                       </div>
                     ))}
@@ -513,17 +556,17 @@ export default function Home() {
                           open();
                         }}
                         disabled={photoControlsDisabled}
-                        className="flex aspect-square flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[#dfe2d9] bg-white/70 text-xs font-medium text-[#78816a] transition hover:border-[#aab987] hover:bg-white"
+                        className="flex aspect-square flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[#232832] bg-[#14171d] text-xs font-medium text-[#9ca3af] transition hover:border-[#3b82f6] hover:bg-[#1b2029] disabled:opacity-50"
                       >
-                        <span className="text-xl leading-none">+</span>
+                        <Plus aria-hidden="true" className="size-4" />
                         Add view
                       </button>
                     )}
                   </div>
                 ) : (
                   <div className="flex flex-col items-center px-6 text-center">
-                    <span className="mb-5 flex size-14 items-center justify-center rounded-2xl border border-[#e9ebe3] bg-white text-[#839a4c] shadow-sm">
-                      <PhotoIcon />
+                    <span className="mb-5 flex size-14 items-center justify-center rounded-2xl border border-[#232832] bg-[#14171d] text-[#60a5fa] shadow-sm">
+                      <UploadCloud aria-hidden="true" className="size-5" />
                     </span>
                     <p className="text-[15px] font-semibold text-[#343731]">
                       {isDragActive ? "Drop it here to get started" : "Drop your photo here"}
@@ -536,7 +579,7 @@ export default function Home() {
                         open();
                       }}
                       disabled={photoControlsDisabled}
-                      className="mt-4 rounded-xl bg-[#29352b] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#394a36] disabled:opacity-50"
+                      className="mt-4 rounded-xl bg-[#2563eb] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#1d4ed8] disabled:opacity-50"
                     >
                       Choose photos
                     </button>
@@ -549,7 +592,7 @@ export default function Home() {
                 type="button"
                 onClick={() => setCameraOpen(true)}
                 disabled={photoControlsDisabled}
-                className="mt-4 w-full rounded-xl border border-[#dfe4d5] bg-white px-4 py-3 text-sm font-semibold text-[#536344] transition hover:bg-[#f8faf4] disabled:cursor-not-allowed disabled:opacity-50"
+                className="mt-4 w-full rounded-xl border border-[#232832] bg-[#14171d] px-4 py-3 text-sm font-semibold text-[#9ca3af] transition hover:bg-[#1b2029] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Take a photo
               </button>
@@ -557,6 +600,17 @@ export default function Home() {
                 <CameraCapture
                   onCapture={(file) => onDrop([file], [])}
                   onClose={() => setCameraOpen(false)}
+                />
+              )}
+
+              {images[0] && (
+                <ScalingPreview
+                  file={images[0].file}
+                  previewUrl={images[0].previewUrl}
+                  widthMm={Math.round(getDimensionValue("z") * (aspectRatio ?? 1))}
+                  heightMm={getDimensionValue("z")}
+                  onHeightChange={handlePreviewHeightChange}
+                  onAspectRatioChange={handleAspectRatioChange}
                 />
               )}
 
@@ -606,16 +660,16 @@ export default function Home() {
 
                       return (
                         <div key={stage.id} className="min-w-0">
-                          <div className={`mb-2 h-1 rounded-full ${isComplete || isCurrent ? "bg-[#9cba48]" : "bg-[#e6e8e1]"}`}>
+                          <div className={`mb-2 h-1 rounded-full ${isComplete || isCurrent                           ? "bg-[#3b82f6]" : "bg-[#e6e8e1]"}`}>
                             {isCurrent && stage.id !== "ready" && (
                               <div
-                                className={`h-full rounded-full bg-[#718c30] ${stage.id === "uploading" ? "animate-pulse" : ""}`}
+                                className={`h-full rounded-full bg-[#3b82f6] ${stage.id === "uploading" ? "animate-pulse" : ""}`}
                                 style={{ width: fillWidth }}
                               />
                             )}
                           </div>
                           <p className={`truncate text-[10px] font-medium sm:text-[11px] ${isComplete || isCurrent ? "text-[#505747]" : "text-[#a0a39b]"}`}>
-                            {isComplete && <span className="mr-1 inline-flex align-[-2px] text-[#849e43]"><CheckIcon /></span>}
+                            {isComplete && <span className="mr-1 inline-flex align-[-2px] text-[#60a5fa]"><Check aria-hidden="true" className="size-3.5" /></span>}
                             {stage.label}
                           </p>
                         </div>
@@ -664,22 +718,19 @@ export default function Home() {
               {exportError && <p role="alert" className="mt-2 text-xs font-medium text-[#b34e3a]">{exportError}</p>}
             </div>
             <div className="flex items-center gap-2 border-t border-[#efefec] px-5 py-3.5 text-[11px] text-[#93968e] sm:px-7">
-              <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" className="size-4 shrink-0">
-                <path d="M8 1.8 13 4v3.4c0 3.1-2.1 5.4-5 6.8-2.9-1.4-5-3.7-5-6.8V4l5-2.2Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
-                <path d="m5.8 8 1.5 1.5 3-3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              Your photos are sent securely to Meshy to generate your model.
+              <LockKeyhole aria-hidden="true" className="size-4 shrink-0 text-[#60a5fa]" />
+              Your photos are sent securely to our image-generation service.
             </div>
           </section>
 
           <aside className="rounded-[22px] border border-[#e8e9e4] bg-white p-5 shadow-[0_8px_30px_rgba(27,31,24,0.035)] sm:p-6">
             <div className="mb-6 flex items-start justify-between">
               <div>
-                <div className="mb-3 flex size-10 items-center justify-center rounded-xl bg-[#f1f5e8] text-[#849c48]"><CubeIcon /></div>
+                <div className="mb-3 flex size-10 items-center justify-center rounded-xl bg-[#17243a] text-[#60a5fa]"><Box aria-hidden="true" className="size-5" /></div>
                 <h2 className="text-sm font-semibold">Print dimensions</h2>
                 <p className="mt-1 text-xs text-[#92958d]">Set the finished model size</p>
               </div>
-              <span className="rounded-full bg-[#f3f5ed] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-[#7b8e4a]">Step 02</span>
+              <span className="rounded-full bg-[#17243a] px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.1em] text-[#60a5fa]">Step 02</span>
             </div>
 
             <div className="space-y-3">
@@ -688,7 +739,7 @@ export default function Home() {
                   <span className="flex items-center gap-3">
                     <span className={`flex size-7 items-center justify-center rounded-lg text-xs font-semibold ${
                       dimension === "x" ? "bg-[#f3eee6] text-[#a17d4b]" : dimension === "y" ? "bg-[#eaf1f2] text-[#648b91]" : "bg-[#f0edf5] text-[#8975a2]"
-                    }`}>{dimension.toUpperCase()}</span>
+                    } font-mono`}>{dimension.toUpperCase()}</span>
                     <span className="text-xs font-medium text-[#5b5f56]">{dimensionLabels[dimension]}</span>
                   </span>
                   <span className="flex items-center gap-2">
@@ -696,10 +747,17 @@ export default function Home() {
                       aria-label={`${dimensionLabels[dimension]} in millimeters`}
                       type="number"
                       min="0.1"
-                      step="0.1"
+                      max={
+                        dimension === "x" && aspectRatio
+                          ? 250
+                          : dimension === "z" && aspectRatio
+                            ? Math.max(1, Math.min(250, Math.floor(250 / aspectRatio)))
+                            : undefined
+                      }
+                      step={dimension === "x" && aspectRatio ? "1" : "0.1"}
                       value={dimensions[dimension]}
                       onChange={(event) => updateDimension(dimension, event.target.value)}
-                      className="w-20 bg-transparent text-right text-sm font-semibold tabular-nums text-[#353932] outline-none"
+                      className="w-20 bg-transparent text-right font-mono text-sm font-semibold tabular-nums text-[#f3f4f6] outline-none"
                     />
                     <span className="text-[11px] text-[#9a9d94]">mm</span>
                   </span>
@@ -710,7 +768,7 @@ export default function Home() {
             <div className="mt-5 rounded-xl bg-[#f8f9f5] px-4 py-3.5">
               <div className="flex items-center justify-between text-[11px]">
                 <span className="text-[#858980]">Estimated footprint</span>
-                <span className="font-semibold tabular-nums text-[#4d5345]">
+                <span className="font-mono font-semibold tabular-nums text-[#f3f4f6]">
                   {dimensions.x || "0"} × {dimensions.y || "0"} × {dimensions.z || "0"} mm
                 </span>
               </div>
@@ -722,7 +780,7 @@ export default function Home() {
               disabled={photoControlsDisabled}
               className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl border border-[#dfe4d5] bg-white px-4 py-3 text-sm font-semibold text-[#536344] transition hover:bg-[#f8faf4] disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <PhotoIcon />
+              <UploadCloud aria-hidden="true" className="size-5" />
               {images.length ? "Add more photos" : "Choose photos"}
             </button>
             <button
@@ -731,7 +789,7 @@ export default function Home() {
               disabled={images.length === 0 || status === "uploading" || status === "generating"}
               className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-[#29352b] px-4 py-3.5 text-sm font-semibold text-white transition hover:bg-[#394a36] disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <CubeIcon className="size-[18px] text-[#d5eb89]" />
+              <Sparkles aria-hidden="true" className="size-[18px] text-[#bfdbfe]" />
               {status === "ready" ? "Regenerate 3D model" : status === "uploading" || status === "generating" ? "Generating model…" : status === "error" ? "Try again" : "Generate 3D model"}
             </button>
             <p className="mt-3 text-center text-[10px] leading-5 text-[#a0a39b]">
@@ -742,7 +800,7 @@ export default function Home() {
 
         <footer className="mt-9 flex flex-col gap-2 border-t border-[#e8e9e4] pt-5 text-[11px] text-[#a0a39b] sm:flex-row sm:items-center sm:justify-between">
           <span>Capture &amp; Create - 3D Print Studio</span>
-          <span>Image-to-model generation powered by Meshy</span>
+          <span>Precision image-to-model generation</span>
         </footer>
       </div>
     </main>

@@ -102,7 +102,7 @@ export async function POST(request: Request) {
 
     if (!isRecord(result) || typeof result.result !== "string" || !result.result) {
       return NextResponse.json(
-        { error: "Meshy returned a task response without an ID." },
+        { error: "The image generation service returned a task response without an ID." },
         { status: 502 },
       );
     }
@@ -120,7 +120,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }
 
-    console.error("Meshy task creation failed.", error);
+    console.error("Image generation task creation failed.", error);
     return NextResponse.json({ error: "Unable to create the 3D model task." }, { status: 500 });
   }
 }

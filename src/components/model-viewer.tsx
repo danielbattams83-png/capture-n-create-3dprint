@@ -48,14 +48,14 @@ class ViewerErrorBoundary extends Component<
       return (
         <div className="flex h-full min-h-[340px] items-center justify-center px-6 text-center">
           <div>
-            <p className="text-sm font-semibold text-[#505747]">Preview unavailable</p>
-            <p className="mt-2 text-xs leading-5 text-[#898d84]">
+            <p className="text-sm font-semibold text-[#f3f4f6]">Preview unavailable</p>
+            <p className="mt-2 text-xs leading-5 text-[#9ca3af]">
               The model could not be displayed. You can retry the preview or download the generated file below.
             </p>
             <button
               type="button"
               onClick={this.props.onRetry}
-              className="mt-4 rounded-lg border border-[#dfe2d9] bg-white px-3 py-2 text-xs font-semibold text-[#536b2d] shadow-sm transition hover:bg-[#f3f5ed]"
+              className="mt-4 rounded-lg border border-[#232832] bg-[#14171d] px-3 py-2 text-xs font-semibold text-[#60a5fa] shadow-sm transition hover:bg-[#1b2029]"
             >
               Retry preview
             </button>
@@ -133,7 +133,7 @@ function LoadedModel({
 function LoadingModel() {
   return (
     <Html center>
-      <div className="whitespace-nowrap rounded-lg bg-white/90 px-3 py-2 text-xs font-medium text-[#68705e] shadow-sm">
+      <div className="whitespace-nowrap rounded-lg border border-[#232832] bg-[#14171d]/90 px-3 py-2 text-xs font-medium text-[#9ca3af] shadow-sm">
         Loading 3D model…
       </div>
     </Html>
@@ -151,16 +151,16 @@ export default function ModelViewer({
 }: ModelViewerProps) {
   return (
     <ViewerErrorBoundary key={modelUrl} onRetry={onRetry}>
-      <div className="relative h-[360px] min-h-[340px] w-full overflow-hidden rounded-2xl bg-[#f7f8f4] sm:h-[420px]">
+      <div className="relative h-[360px] min-h-[340px] w-full overflow-hidden rounded-2xl border border-[#232832] bg-[#0b0d10] sm:h-[420px]">
         <Canvas
           dpr={[1, 1.5]}
           camera={{ position: [230, 185, 230], fov: 40, near: 0.1, far: 2000 }}
           gl={{ antialias: true, alpha: false }}
         >
-          <color attach="background" args={["#f7f8f4"]} />
-          <ambientLight intensity={1.6} />
-          <directionalLight position={[120, 200, 100]} intensity={2.2} />
-          <directionalLight position={[-100, 100, -80]} intensity={0.8} />
+          <color attach="background" args={["#0b0d10"]} />
+          <ambientLight intensity={1.1} />
+          <directionalLight position={[120, 200, 100]} color="#60a5fa" intensity={2.2} />
+          <directionalLight position={[-100, 100, -80]} color="#f3f4f6" intensity={0.8} />
           <Suspense fallback={<LoadingModel />}>
             <LoadedModel
               modelUrl={modelUrl}
@@ -177,8 +177,8 @@ export default function ModelViewer({
             position={[0, -0.5, 0]}
             cellSize={10}
             sectionSize={50}
-            cellColor="#cbd2c2"
-            sectionColor="#aab69b"
+            cellColor="#1e242b"
+            sectionColor="#2a323d"
             cellThickness={0.7}
             sectionThickness={1.2}
             fadeDistance={340}
@@ -193,10 +193,10 @@ export default function ModelViewer({
             dampingFactor={0.08}
           />
         </Canvas>
-        <div className="pointer-events-none absolute left-3 top-3 rounded-lg border border-[#e5e8df] bg-white/90 px-2.5 py-1.5 text-[10px] font-medium text-[#6e7564] shadow-sm backdrop-blur">
-          Print bed · 220 × 220 mm
+        <div className="pointer-events-none absolute left-3 top-3 rounded-lg border border-[#232832] bg-[#14171d]/90 px-2.5 py-1.5 font-mono text-[10px] font-medium text-[#9ca3af] shadow-sm backdrop-blur">
+          Print bed · 250 × 250 mm
         </div>
-        <div className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-white/90 px-3 py-1.5 text-[10px] font-medium text-[#767b70] shadow-sm backdrop-blur">
+        <div className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-[#232832] bg-[#14171d]/90 px-3 py-1.5 text-[10px] font-medium text-[#9ca3af] shadow-sm backdrop-blur">
           Drag to orbit · Scroll to zoom · Right-drag to pan
         </div>
       </div>

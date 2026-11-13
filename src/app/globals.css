@@ -1,10 +1,10 @@
 @import "tailwindcss";
 
 :root {
-  color-scheme: light;
-  background: #f7f7f5;
-  color: #20211f;
-  font-family: Arial, Helvetica, sans-serif;
+  color-scheme: dark;
+  background: #0b0d10;
+  color: #f3f4f6;
+  font-family: var(--font-inter), Arial, Helvetica, sans-serif;
 }
 
 * {
@@ -14,9 +14,106 @@
 body {
   margin: 0;
   min-height: 100vh;
+  background: #0b0d10;
+  color: #f3f4f6;
+  font-family: var(--font-inter), Arial, Helvetica, sans-serif;
 }
 
 button,
 input {
   font: inherit;
+}
+
+input[type="number"],
+input[type="range"],
+.font-mono {
+  font-family: var(--font-jetbrains-mono), monospace;
+}
+
+main {
+  background-color: #0b0d10 !important;
+  color: #f3f4f6;
+}
+
+main [class*="bg-[#f"],
+main [class*="bg-white"] {
+  background-color: #14171d !important;
+}
+
+main [class*="border-[#e"],
+main [class*="border-[#d"] {
+  border-color: #232832 !important;
+}
+
+main [class*="text-[#"] {
+  color: #9ca3af;
+}
+
+main [class*="text-[#f3f4f6]"],
+main [class*="text-[#f9fafb]"] {
+  color: #f3f4f6;
+}
+
+main [class*="text-[#3b82f6]"],
+main [class*="text-[#60a5fa]"],
+main [class*="text-[#93c5fd]"],
+main [class*="text-[#bfdbfe]"] {
+  color: #60a5fa;
+}
+
+main [class*="text-[#b34e3a]"] {
+  color: #fda4af;
+}
+
+main [class*="text-[#fda4af]"] {
+  color: #fda4af;
+}
+
+main [class*="bg-[#29352b]"] {
+  background-color: #2563eb !important;
+}
+
+main [class*="hover:bg-[#394a36]"]:hover {
+  background-color: #1d4ed8 !important;
+}
+
+main [class*="bg-[#17243a]"] {
+  background-color: #17243a !important;
+}
+
+.studio-panel {
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 3%);
+}
+
+.studio-range {
+  height: 4px;
+  appearance: none;
+  border-radius: 9999px;
+  background: #2a323d;
+  accent-color: #3b82f6;
+  cursor: pointer;
+}
+
+.studio-range::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  appearance: none;
+  border: 2px solid #bfdbfe;
+  border-radius: 50%;
+  background: #3b82f6;
+  box-shadow: 0 0 10px rgb(59 130 246 / 45%);
+}
+
+.studio-range::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border: 2px solid #bfdbfe;
+  border-radius: 50%;
+  background: #3b82f6;
+  box-shadow: 0 0 10px rgb(59 130 246 / 45%);
+}
+
+::selection {
+  background: rgb(59 130 246 / 35%);
+  color: #f3f4f6;
 }
