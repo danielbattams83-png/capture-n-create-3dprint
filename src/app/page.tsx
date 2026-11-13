@@ -386,22 +386,22 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-[#f7f7f5] text-[#20211f]">
       <header className="border-b border-[#e9e9e5] bg-white/80">
-        <div className="mx-auto flex h-24 max-w-7xl items-center justify-between px-5 sm:h-[192px] sm:px-8">
-          <a href="#" className="flex shrink-0 items-center" aria-label="Capture & Create - 3D Print Studio home">
+        <div className="mx-auto flex max-w-7xl flex-col items-stretch sm:h-[192px] sm:flex-row sm:items-center sm:justify-between sm:px-8">
+          <a href="#" className="block w-full shrink-0 sm:w-auto" aria-label="A.C.E.S. 3D Print Studio home">
             <Image
-              src="/capture-create-3d-print-studio.png"
-              alt="Capture & Create 3D Print Studio"
-              width={965}
-              height={706}
+              src="/A.C.E.S. 3D Print Studio.png"
+              alt="A.C.E.S. 3D Print Studio"
+              width={2197}
+              height={1431}
               priority
-              className="h-auto w-28 object-contain sm:w-[232px]"
+              className="block h-auto w-full object-contain sm:w-[232px]"
             />
           </a>
           <div className="hidden items-center gap-2 text-xs font-medium text-[#787c74] sm:flex">
             <span className="size-1.5 rounded-full bg-[#a5c848]" />
             Your ideas, made tangible
           </div>
-          <button type="button" className="rounded-full border border-[#e8e9e3] px-4 py-2 text-xs font-semibold text-[#4c5049] transition hover:border-[#c8cbc2] hover:bg-[#fafaf8]">
+          <button type="button" className="mx-5 mb-4 self-end rounded-full border border-[#e8e9e3] px-4 py-2 text-xs font-semibold text-[#4c5049] transition hover:border-[#c8cbc2] hover:bg-[#fafaf8] sm:mx-0 sm:mb-0">
             How it works
           </button>
         </div>
