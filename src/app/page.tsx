@@ -79,7 +79,6 @@ export default function Home() {
   const [previewError, setPreviewError] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [exportModel, setExportModel] = useState<ModelExportAction | null>(null);
-  const [aspectRatio, setAspectRatio] = useState<number | null>(null);
   const activeRequest = useRef<AbortController | null>(null);
   const previewUrls = useRef<string[]>([]);
   const previewTask = useRef<PreviewTask | null>(null);
@@ -104,7 +103,6 @@ export default function Home() {
 
   const handleAspectRatioChange = useCallback((ratio: number) => {
     if (!Number.isFinite(ratio) || ratio <= 0) return;
-    setAspectRatio(ratio);
     setDimensions((current) => {
       const maxHeight = Math.max(1, Math.min(250, Math.floor(250 / ratio)));
       const height = Math.min(maxHeight, Number(current.z) || 100);
@@ -116,24 +114,15 @@ export default function Home() {
     });
   }, []);
 
-  const handlePreviewHeightChange = useCallback(
-    (height: number) => {
-      const maxHeight = aspectRatio
-        ? Math.max(1, Math.min(250, Math.floor(250 / aspectRatio)))
-        : 250;
-      const boundedHeight = Math.min(maxHeight, Math.max(1, height));
-      setDimensions((current) => ({
-        ...current,
-        x: String(
-          aspectRatio
-            ? Math.round(boundedHeight * aspectRatio)
-            : Number(current.x) || 100,
-        ),
-        z: String(boundedHeight),
-      }));
-    },
-    [aspectRatio],
-  );
+  const handlePreviewWidthChange = useCallback((width: number) => {
+    const boundedWidth = Math.min(250, Math.max(1, width));
+    setDimensions((current) => ({ ...current, x: String(boundedWidth) }));
+  }, []);
+
+  const handlePreviewHeightChange = useCallback((height: number) => {
+    const boundedHeight = Math.min(250, Math.max(1, height));
+    setDimensions((current) => ({ ...current, z: String(boundedHeight) }));
+  }, []);
 
   const loadModelPreview = async (task: PreviewTask, signal: AbortSignal) => {
     setPreviewLoading(true);
@@ -365,7 +354,6 @@ export default function Home() {
       previewUrls.current = previewUrls.current.filter((url) => url !== removed.previewUrl);
     }
     setImages((current) => current.filter((_, index) => index !== indexToRemove));
-    if (indexToRemove === 0) setAspectRatio(null);
     activeRequest.current?.abort();
     activeRequest.current = null;
     setGenerationModalOpen(false);
@@ -383,33 +371,6 @@ export default function Home() {
   };
 
   const updateDimension = (dimension: PrintDimension, value: string) => {
-    if (aspectRatio && dimension === "x" && value !== "") {
-      const width = Number(value);
-      if (Number.isFinite(width) && width > 0) {
-        const maxHeight = Math.max(1, Math.min(250, Math.floor(250 / aspectRatio)));
-        const height = Math.max(1, Math.min(maxHeight, width / aspectRatio));
-        setDimensions((current) => ({
-          ...current,
-          x: String(Math.round(height * aspectRatio)),
-          z: String(height),
-        }));
-        return;
-      }
-    }
-
-    if (aspectRatio && dimension === "z" && value !== "") {
-      const maxHeight = Math.max(1, Math.min(250, Math.floor(250 / aspectRatio)));
-      const height = Math.max(1, Math.min(maxHeight, Number(value)));
-      if (Number.isFinite(height) && height > 0) {
-        setDimensions((current) => ({
-          ...current,
-          x: String(Math.round(height * aspectRatio)),
-          z: String(height),
-        }));
-        return;
-      }
-    }
-
     setDimensions((current) => ({ ...current, [dimension]: value }));
   };
 
@@ -425,7 +386,6 @@ export default function Home() {
     previewUrls.current = [];
     setImages([]);
     setGenerationModalOpen(false);
-    setAspectRatio(null);
     setFailedStage(null);
     setStatus("idle");
     setError("");
@@ -618,8 +578,9 @@ export default function Home() {
                 <ScalingPreview
                   file={images[0].file}
                   previewUrl={images[0].previewUrl}
-                  widthMm={Math.round(getDimensionValue("z") * (aspectRatio ?? 1))}
+                  widthMm={getDimensionValue("x")}
                   heightMm={getDimensionValue("z")}
+                  onWidthChange={handlePreviewWidthChange}
                   onHeightChange={handlePreviewHeightChange}
                   onAspectRatioChange={handleAspectRatioChange}
                 />
@@ -758,14 +719,8 @@ export default function Home() {
                       aria-label={`${dimensionLabels[dimension]} in millimeters`}
                       type="number"
                       min="0.1"
-                      max={
-                        dimension === "x" && aspectRatio
-                          ? 250
-                          : dimension === "z" && aspectRatio
-                            ? Math.max(1, Math.min(250, Math.floor(250 / aspectRatio)))
-                            : undefined
-                      }
-                      step={dimension === "x" && aspectRatio ? "1" : "0.1"}
+                      max={dimension === "x" || dimension === "z" ? 250 : undefined}
+                      step="0.1"
                       value={dimensions[dimension]}
                       onChange={(event) => updateDimension(dimension, event.target.value)}
                       className="w-20 bg-transparent text-right font-mono text-sm font-semibold tabular-nums text-[#f3f4f6] outline-none"
