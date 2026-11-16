@@ -23,6 +23,7 @@ type ModelViewerProps = {
 type ViewerErrorBoundaryProps = {
   children: ReactNode;
   onRetry: () => void;
+  resetKey: string;
 };
 
 type ViewerErrorBoundaryState = {
@@ -41,6 +42,12 @@ class ViewerErrorBoundary extends Component<
 
   componentDidCatch(error: Error) {
     console.error("3D model preview failed to load.", error);
+  }
+
+  componentDidUpdate(previousProps: ViewerErrorBoundaryProps) {
+    if (this.state.hasError && previousProps.resetKey !== this.props.resetKey) {
+      this.setState({ hasError: false });
+    }
   }
 
   render() {
@@ -150,7 +157,7 @@ export default function ModelViewer({
   onRetry,
 }: ModelViewerProps) {
   return (
-    <ViewerErrorBoundary key={modelUrl} onRetry={onRetry}>
+    <ViewerErrorBoundary resetKey={modelUrl} onRetry={onRetry}>
       <div className="relative h-[360px] min-h-[340px] w-full overflow-hidden rounded-2xl border border-[#232832] bg-[#0b0d10] sm:h-[420px]">
         <Canvas
           dpr={[1, 1.5]}

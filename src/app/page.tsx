@@ -12,6 +12,7 @@ import GenerationModal from "@/components/generation-modal";
 import ImagePreprocessingModal from "@/components/image-preprocessing-modal";
 import type { ProcessedImageReview } from "@/components/image-preprocessing-modal";
 import AssetBrowser from "@/components/asset-browser";
+import TextureGenerator from "@/components/texture-generator";
 import { isolateAndCropSubject } from "@/lib/image-preprocessing";
 import type { KhronosAsset } from "@/lib/khronos-assets";
 import {
@@ -107,6 +108,8 @@ export default function Home() {
   const [progress, setProgress] = useState(0);
   const [modelUrls, setModelUrls] = useState<ModelUrls | null>(null);
   const [previewModelUrl, setPreviewModelUrl] = useState<string | null>(null);
+  const [activeModelBlob, setActiveModelBlob] = useState<Blob | null>(null);
+  const [activeModelName, setActiveModelName] = useState("");
   const [previewError, setPreviewError] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [exportModel, setExportModel] = useState<ModelExportAction | null>(null);
@@ -267,6 +270,8 @@ export default function Home() {
       }
       if (!signal.aborted) {
         setPreviewModelUrl(URL.createObjectURL(modelBlob));
+        setActiveModelBlob(modelBlob);
+        setActiveModelName(task.creationName);
         try {
           await saveCreation({
             id: task.taskId,
@@ -317,6 +322,8 @@ export default function Home() {
     setExportError("");
     setModelUrls(null);
     setPreviewModelUrl(null);
+    setActiveModelBlob(null);
+    setActiveModelName("");
     setPreviewError("");
     setPreviewLoading(false);
     setCatalogModel(null);
@@ -617,6 +624,8 @@ export default function Home() {
     setProgress(0);
     setModelUrls(null);
     setPreviewModelUrl(null);
+    setActiveModelBlob(null);
+    setActiveModelName("");
     setPreviewError("");
     setPreviewLoading(false);
     previewTask.current = null;
@@ -631,6 +640,8 @@ export default function Home() {
     activeRequest.current = null;
     const modelUrl = URL.createObjectURL(creation.model);
     setPreviewModelUrl(modelUrl);
+    setActiveModelBlob(creation.model);
+    setActiveModelName(creation.name);
     setModelUrls({ glb: modelUrl });
     setDimensions({
       x: String(creation.dimensions.width),
@@ -678,6 +689,8 @@ export default function Home() {
 
       const modelUrl = URL.createObjectURL(modelBlob);
       setPreviewModelUrl(modelUrl);
+      setActiveModelBlob(modelBlob);
+      setActiveModelName(`${asset.label} edit`);
       setModelUrls({ glb: modelUrl });
       setDimensions({ x: "100", y: "100", z: "100" });
       setLockedAspectRatio(1);
@@ -731,6 +744,37 @@ export default function Home() {
     } catch (storageError) {
       console.error("Could not save the catalog model to Creations.", storageError);
       setCatalogSaveStatus("error");
+    }
+  };
+
+  const applyGeneratedTexture = async (texturedModel: Blob) => {
+    const modelUrl = URL.createObjectURL(texturedModel);
+    setPreviewModelUrl(modelUrl);
+    setModelUrls({ glb: modelUrl });
+    setActiveModelBlob(texturedModel);
+    setCatalogModel((current) =>
+      current ? { ...current, blob: texturedModel } : current,
+    );
+    setPreviewError("");
+    setExportError("");
+    setExportModel(null);
+
+    if (editingCreationId) {
+      try {
+        await saveCreation({
+          id: editingCreationId,
+          name: activeModelName || "Textured model",
+          model: texturedModel,
+          dimensions: {
+            width: getDimensionValue("x"),
+            depth: getDimensionValue("y"),
+            height: getDimensionValue("z"),
+          },
+        });
+        setCreationsRefreshKey((current) => current + 1);
+      } catch (storageError) {
+        console.error("Could not update the local creation texture.", storageError);
+      }
     }
   };
 
@@ -1032,6 +1076,12 @@ export default function Home() {
                     </button>
                   )}
                 </div>
+              )}
+              {status === "ready" && activeModelBlob && previewModelUrl && (
+                <TextureGenerator
+                  model={activeModelBlob}
+                  onTextureReady={applyGeneratedTexture}
+                />
               )}
               {catalogModel && (
                 <div className="mt-3 rounded-xl border border-[#d9e4f7] bg-[#f4f7fc] px-4 py-3">
