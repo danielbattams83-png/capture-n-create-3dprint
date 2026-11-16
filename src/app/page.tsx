@@ -12,12 +12,26 @@ import GenerationModal from "@/components/generation-modal";
 import ImagePreprocessingModal from "@/components/image-preprocessing-modal";
 import type { ProcessedImageReview } from "@/components/image-preprocessing-modal";
 import { isolateAndCropSubject } from "@/lib/image-preprocessing";
+import {
+  saveCreation,
+  updateCreationDimensions,
+  type StoredCreation,
+} from "@/lib/creations-storage";
 
 const ModelViewer = dynamic(() => import("@/components/model-viewer"), {
   ssr: false,
   loading: () => (
     <div className="flex h-[360px] items-center justify-center rounded-2xl bg-[#0b0d10] font-mono text-xs font-medium text-[#9ca3af] sm:h-[420px]">
       Preparing 3D preview…
+    </div>
+  ),
+});
+
+const CreationsCarousel = dynamic(() => import("@/components/creations-carousel"), {
+  ssr: false,
+  loading: () => (
+    <div className="mt-10 flex min-h-72 items-center justify-center rounded-[22px] border border-[#e8e9e4] bg-white font-mono text-xs text-[#92958d]">
+      Loading local creations…
     </div>
   ),
 });
@@ -31,6 +45,8 @@ type PreviewTask = {
   taskId: string;
   taskType: "image-to-3d" | "multi-image-to-3d";
   taskToken: string;
+  creationName: string;
+  dimensions: { width: number; depth: number; height: number };
 };
 
 const stages: { id: Exclude<GenerationStatus, "idle" | "error">; label: string }[] = [
@@ -91,6 +107,8 @@ export default function Home() {
   const [previewError, setPreviewError] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [exportModel, setExportModel] = useState<ModelExportAction | null>(null);
+  const [creationsRefreshKey, setCreationsRefreshKey] = useState(0);
+  const [editingCreationId, setEditingCreationId] = useState<string | null>(null);
   const [lockedAspectRatio, setLockedAspectRatio] = useState<number | null>(1);
   const activeRequest = useRef<AbortController | null>(null);
   const previewUrls = useRef<string[]>([]);
@@ -114,6 +132,24 @@ export default function Home() {
     if (!previewModelUrl) return;
     return () => URL.revokeObjectURL(previewModelUrl);
   }, [previewModelUrl]);
+
+  useEffect(() => {
+    if (!editingCreationId) return;
+    const width = Number(dimensions.x);
+    const depth = Number(dimensions.y);
+    const height = Number(dimensions.z);
+    if (![width, depth, height].every((value) => Number.isFinite(value) && value > 0)) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      void updateCreationDimensions(editingCreationId, { width, depth, height })
+        .catch((storageError) =>
+          console.error("Could not save the edited creation dimensions.", storageError),
+        );
+    }, 500);
+    return () => window.clearTimeout(timeout);
+  }, [dimensions.x, dimensions.y, dimensions.z, editingCreationId]);
 
   const registerExportModel = useCallback((action: ModelExportAction | null) => {
     setExportModel(() => action);
@@ -218,6 +254,20 @@ export default function Home() {
       }
       if (!signal.aborted) {
         setPreviewModelUrl(URL.createObjectURL(modelBlob));
+        try {
+          await saveCreation({
+            id: task.taskId,
+            name: task.creationName,
+            model: modelBlob,
+            dimensions: task.dimensions,
+          });
+          if (!signal.aborted) {
+            setEditingCreationId(task.taskId);
+            setCreationsRefreshKey((current) => current + 1);
+          }
+        } catch (storageError) {
+          console.error("Could not save the model to local creations.", storageError);
+        }
       }
     } catch (previewLoadError) {
       if (!signal.aborted) {
@@ -258,6 +308,7 @@ export default function Home() {
     setPreviewLoading(false);
     previewTask.current = null;
     setExportModel(null);
+    setEditingCreationId(null);
     setProgress(0);
     setFailedStage(null);
     setStatus("uploading");
@@ -288,13 +339,25 @@ export default function Home() {
       const taskId = createResult.task_id;
       const taskType = createResult.task_type;
       const taskToken = createResult.task_token;
-      const task: PreviewTask = { taskId, taskType, taskToken };
+      const sourceName = selectedImages[0]?.file.name
+        .replace(/-isolated\.png$/i, "")
+        .replace(/\.[^.]+$/, "");
+      const task: PreviewTask = {
+        taskId,
+        taskType,
+        taskToken,
+        creationName: sourceName ? `${sourceName} model` : "3D creation",
+        dimensions: {
+          width: getDimensionValue("x"),
+          depth: getDimensionValue("y"),
+          height: getDimensionValue("z"),
+        },
+      };
       previewTask.current = task;
       activeStage = "generating";
       setStatus("generating");
-      const startedAt = Date.now();
 
-      while (Date.now() - startedAt < 15 * 60 * 1000) {
+      for (let pollAttempt = 0; pollAttempt < 180; pollAttempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 5000));
         if (controller.signal.aborted) return;
 
@@ -497,6 +560,7 @@ export default function Home() {
     setPreviewLoading(false);
     previewTask.current = null;
     setExportModel(null);
+    setEditingCreationId(null);
   };
 
   const updateDimension = (dimension: PrintDimension, value: string) => {
@@ -542,6 +606,39 @@ export default function Home() {
     setPreviewLoading(false);
     previewTask.current = null;
     setExportModel(null);
+    setEditingCreationId(null);
+  };
+
+  const editCreation = (creation: StoredCreation) => {
+    activeRequest.current?.abort();
+    activeRequest.current = null;
+    const modelUrl = URL.createObjectURL(creation.model);
+    setPreviewModelUrl(modelUrl);
+    setModelUrls({ glb: modelUrl });
+    setDimensions({
+      x: String(creation.dimensions.width),
+      y: String(creation.dimensions.depth),
+      z: String(creation.dimensions.height),
+    });
+    setLockedAspectRatio(creation.dimensions.width / creation.dimensions.height);
+    setEditingCreationId(creation.id);
+    setGenerationModalOpen(false);
+    setPreviewError("");
+    setPreviewLoading(false);
+    setExportError("");
+    setExportModel(null);
+    setError("");
+    setFailedStage(null);
+    setProgress(100);
+    setStatus("ready");
+    previewTask.current = null;
+    window.setTimeout(
+      () =>
+        document
+          .getElementById("model-preview")
+          ?.scrollIntoView({ behavior: "smooth", block: "center" }),
+      0,
+    );
   };
 
   return (
@@ -918,6 +1015,8 @@ export default function Home() {
             </aside>
           </div>
         </div>
+
+        <CreationsCarousel refreshKey={creationsRefreshKey} onEdit={editCreation} />
 
         <footer className="mt-9 flex flex-col gap-2 border-t border-[#e8e9e4] pt-5 text-[11px] text-[#a0a39b] sm:flex-row sm:items-center sm:justify-between">
           <span>Capture &amp; Create - 3D Print Studio</span>
