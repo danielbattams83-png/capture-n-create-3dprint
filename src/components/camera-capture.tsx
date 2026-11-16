@@ -2,6 +2,110 @@
 
 import { useEffect, useRef, useState } from "react";
 
+const MINOR_TICK_PX = 10;
+const MAJOR_TICK_INTERVAL = 5;
+
+function PrecisionScaleRulers() {
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+
+  useEffect(() => {
+    const overlay = overlayRef.current;
+    if (!overlay) return;
+
+    const updateSize = () => {
+      const nextSize = {
+        width: overlay.clientWidth,
+        height: overlay.clientHeight,
+      };
+      setSize((current) =>
+        current.width === nextSize.width && current.height === nextSize.height
+          ? current
+          : nextSize,
+      );
+    };
+
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(overlay);
+    return () => observer.disconnect();
+  }, []);
+
+  const horizontalTicks = Array.from({
+    length: Math.floor(size.width / MINOR_TICK_PX) + 1,
+  });
+  const verticalTicks = Array.from({
+    length: Math.floor(size.height / MINOR_TICK_PX) + 1,
+  });
+  const labelStyle = {
+    textShadow: "0 1px 2px rgba(0,0,0,0.95), 0 0 2px rgba(0,0,0,0.9)",
+  };
+
+  return (
+    <div
+      ref={overlayRef}
+      aria-hidden="true"
+      className="pointer-events-none absolute inset-0 z-10 overflow-hidden rounded-xl border-l border-t border-white/25"
+    >
+      {horizontalTicks.map((_, index) => {
+        const major = index % MAJOR_TICK_INTERVAL === 0;
+        const position = index * MINOR_TICK_PX;
+        return (
+          <span
+            key={`horizontal-${position}`}
+            className={`absolute top-0 border-l border-white/70 ${
+              major ? "h-3" : "h-1.5"
+            }`}
+            style={{ left: position }}
+          >
+            {major && (
+              <span
+                className="absolute left-0 top-3 rounded-sm bg-black/25 px-0.5 font-mono text-[9px] font-medium leading-3 text-white"
+                style={{
+                  ...labelStyle,
+                  transform: index === 0 ? "translateX(2px)" : "translateX(-50%)",
+                }}
+              >
+                {index / MAJOR_TICK_INTERVAL}
+              </span>
+            )}
+          </span>
+        );
+      })}
+
+      {verticalTicks.map((_, index) => {
+        const major = index % MAJOR_TICK_INTERVAL === 0;
+        const position = index * MINOR_TICK_PX;
+        return (
+          <span
+            key={`vertical-${position}`}
+            className={`absolute left-0 border-t border-white/70 ${
+              major ? "w-3" : "w-1.5"
+            }`}
+            style={{ top: position }}
+          >
+            {major && index > 0 && (
+              <span
+                className="absolute left-3 top-0 rounded-sm bg-black/25 px-0.5 font-mono text-[9px] font-medium leading-3 text-white"
+                style={{ ...labelStyle, transform: "translateY(-50%)" }}
+              >
+                {index / MAJOR_TICK_INTERVAL}
+              </span>
+            )}
+          </span>
+        );
+      })}
+
+      <span
+        className="absolute right-2 top-2 rounded bg-black/30 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide text-white/90"
+        style={labelStyle}
+      >
+        cm
+      </span>
+    </div>
+  );
+}
+
 export default function CameraCapture({
   onCapture,
   onClose,
@@ -103,14 +207,17 @@ export default function CameraCapture({
         <h2 id="camera-title" className="text-lg font-semibold">Take a photo</h2>
         <button type="button" onClick={onClose} className="rounded-lg border border-[#dfe2d9] px-3 py-2 text-sm font-semibold">Close camera</button>
       </div>
-      <video
-        ref={videoRef}
-        autoPlay
-        muted
-        playsInline
-        onLoadedData={() => setReady(true)}
-        className="aspect-[4/3] w-full rounded-xl bg-black object-contain"
-      />
+      <div className="relative aspect-[4/3] w-full overflow-hidden rounded-xl bg-black">
+        <video
+          ref={videoRef}
+          autoPlay
+          muted
+          playsInline
+          onLoadedData={() => setReady(true)}
+          className="size-full object-contain"
+        />
+        <PrecisionScaleRulers />
+      </div>
       {error ? (
         <p role="alert" className="mt-3 text-sm text-[#b34e3a]">{error}</p>
       ) : (

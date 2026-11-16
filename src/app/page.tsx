@@ -9,6 +9,9 @@ import type { ModelExportAction } from "@/components/model-viewer";
 import ScalingPreview from "@/components/scaling-preview";
 import CameraCapture from "@/components/camera-capture";
 import GenerationModal from "@/components/generation-modal";
+import ImagePreprocessingModal from "@/components/image-preprocessing-modal";
+import type { ProcessedImageReview } from "@/components/image-preprocessing-modal";
+import { isolateAndCropSubject } from "@/lib/image-preprocessing";
 
 const ModelViewer = dynamic(() => import("@/components/model-viewer"), {
   ssr: false,
@@ -23,6 +26,7 @@ type GenerationStatus = "idle" | "uploading" | "generating" | "ready" | "error";
 type PrintDimension = "x" | "y" | "z";
 type ModelUrls = { glb?: string; stl?: string };
 type SelectedImage = { file: File; previewUrl: string };
+type PreprocessingPhase = "processing" | "review" | "error" | null;
 type PreviewTask = {
   taskId: string;
   taskType: "image-to-3d" | "multi-image-to-3d";
@@ -67,6 +71,14 @@ const dimensionLabels: Record<PrintDimension, string> = {
 
 export default function Home() {
   const [cameraOpen, setCameraOpen] = useState(false);
+  const [preprocessingPhase, setPreprocessingPhase] =
+    useState<PreprocessingPhase>(null);
+  const [preprocessingSourceFiles, setPreprocessingSourceFiles] = useState<File[]>([]);
+  const [processedImageReviews, setProcessedImageReviews] = useState<
+    ProcessedImageReview[]
+  >([]);
+  const [preprocessingCompletedCount, setPreprocessingCompletedCount] = useState(0);
+  const [preprocessingError, setPreprocessingError] = useState("");
   const [images, setImages] = useState<SelectedImage[]>([]);
   const [generationModalOpen, setGenerationModalOpen] = useState(false);
   const [status, setStatus] = useState<GenerationStatus>("idle");
@@ -79,9 +91,11 @@ export default function Home() {
   const [previewError, setPreviewError] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [exportModel, setExportModel] = useState<ModelExportAction | null>(null);
-  const [lockedAspectRatio, setLockedAspectRatio] = useState<number | null>(null);
+  const [lockedAspectRatio, setLockedAspectRatio] = useState<number | null>(1);
   const activeRequest = useRef<AbortController | null>(null);
   const previewUrls = useRef<string[]>([]);
+  const pendingPreviewUrls = useRef<string[]>([]);
+  const preprocessingRun = useRef(0);
   const previewTask = useRef<PreviewTask | null>(null);
   const [dimensions, setDimensions] = useState<Record<PrintDimension, string>>({
     x: "100",
@@ -90,7 +104,10 @@ export default function Home() {
   });
 
   useEffect(() => {
-    return () => previewUrls.current.forEach((url) => URL.revokeObjectURL(url));
+    return () => {
+      previewUrls.current.forEach((url) => URL.revokeObjectURL(url));
+      pendingPreviewUrls.current.forEach((url) => URL.revokeObjectURL(url));
+    };
   }, []);
 
   useEffect(() => {
@@ -344,7 +361,74 @@ export default function Home() {
   };
 
   const photoControlsDisabled =
-    images.length >= 4 || status === "uploading" || status === "generating";
+    images.length >= 4 ||
+    status === "uploading" ||
+    status === "generating" ||
+    preprocessingPhase !== null;
+
+  const revokePendingPreviews = () => {
+    pendingPreviewUrls.current.forEach((url) => URL.revokeObjectURL(url));
+    pendingPreviewUrls.current = [];
+  };
+
+  const cancelImagePreprocessing = () => {
+    preprocessingRun.current += 1;
+    revokePendingPreviews();
+    setProcessedImageReviews([]);
+    setPreprocessingSourceFiles([]);
+    setPreprocessingCompletedCount(0);
+    setPreprocessingError("");
+    setPreprocessingPhase(null);
+  };
+
+  const beginImagePreprocessing = async (sourceFiles: File[]) => {
+    const run = preprocessingRun.current + 1;
+    preprocessingRun.current = run;
+    revokePendingPreviews();
+    setProcessedImageReviews([]);
+    setPreprocessingSourceFiles(sourceFiles);
+    setPreprocessingCompletedCount(0);
+    setPreprocessingError("");
+    setPreprocessingPhase("processing");
+
+    const processedImages: ProcessedImageReview[] = [];
+    try {
+      for (let index = 0; index < sourceFiles.length; index += 1) {
+        const processedFile = await isolateAndCropSubject(sourceFiles[index]);
+        if (preprocessingRun.current !== run) return;
+        const previewUrl = URL.createObjectURL(processedFile);
+        pendingPreviewUrls.current.push(previewUrl);
+        processedImages.push({ file: processedFile, previewUrl });
+        setPreprocessingCompletedCount(index + 1);
+      }
+
+      if (preprocessingRun.current !== run) return;
+      setProcessedImageReviews(processedImages);
+      setPreprocessingPhase("review");
+    } catch (processingError) {
+      if (preprocessingRun.current !== run) return;
+      revokePendingPreviews();
+      setProcessedImageReviews([]);
+      setPreprocessingError(
+        processingError instanceof Error
+          ? processingError.message
+          : "The subject could not be isolated from this image.",
+      );
+      setPreprocessingPhase("error");
+    }
+  };
+
+  const approveProcessedImages = () => {
+    if (preprocessingPhase !== "review" || processedImageReviews.length === 0) return;
+    previewUrls.current.push(...processedImageReviews.map(({ previewUrl }) => previewUrl));
+    pendingPreviewUrls.current = [];
+    setImages((current) => [...current, ...processedImageReviews]);
+    setProcessedImageReviews([]);
+    setPreprocessingSourceFiles([]);
+    setPreprocessingCompletedCount(0);
+    setPreprocessingError("");
+    setPreprocessingPhase(null);
+  };
 
   const onDrop = (acceptedFiles: File[], rejectedFiles: { file: File }[]) => {
     if (photoControlsDisabled) return;
@@ -378,12 +462,7 @@ export default function Home() {
     setProgress(0);
     setFailedStage(null);
     setStatus("idle");
-    const addedImages = acceptedFiles.map((file) => ({
-      file,
-      previewUrl: URL.createObjectURL(file),
-    }));
-    previewUrls.current.push(...addedImages.map(({ previewUrl }) => previewUrl));
-    setImages((current) => [...current, ...addedImages]);
+    void beginImagePreprocessing(acceptedFiles);
   };
 
   const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
@@ -638,7 +717,7 @@ export default function Home() {
               </button>
               {cameraOpen && (
                 <CameraCapture
-                  onCapture={(file) => onDrop([file], [])}
+                  onCapture={(file) => void onDrop([file], [])}
                   onClose={() => setCameraOpen(false)}
                 />
               )}
@@ -762,7 +841,7 @@ export default function Home() {
             </div>
             <div className="flex items-center gap-2 border-t border-[#efefec] px-5 py-3.5 text-[11px] text-[#93968e] sm:px-7">
               <LockKeyhole aria-hidden="true" className="size-4 shrink-0 text-[#60a5fa]" />
-              Your photos are sent securely to our image-generation service.
+              Only approved, isolated images are sent to our image-generation service.
             </div>
             </section>
           </div>
@@ -873,6 +952,17 @@ export default function Home() {
               : "View generation error"}
       </button>
     )}
+    <ImagePreprocessingModal
+      open={preprocessingPhase !== null}
+      phase={preprocessingPhase}
+      images={processedImageReviews}
+      completedCount={preprocessingCompletedCount}
+      totalCount={preprocessingSourceFiles.length}
+      error={preprocessingError}
+      onApprove={approveProcessedImages}
+      onCancel={cancelImagePreprocessing}
+      onRetry={() => void beginImagePreprocessing(preprocessingSourceFiles)}
+    />
     <GenerationModal
       open={generationModalOpen}
       images={images}
