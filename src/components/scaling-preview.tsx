@@ -3,15 +3,17 @@
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { Maximize2, Ruler, Scissors, SlidersHorizontal } from "lucide-react";
+import { Lock, Maximize2, Ruler, Scissors, SlidersHorizontal, Unlock } from "lucide-react";
 
 type ScalingPreviewProps = {
   file: File;
   previewUrl: string;
   widthMm: number;
   heightMm: number;
+  proportionsLocked: boolean;
   onWidthChange: (width: number) => void;
   onHeightChange: (height: number) => void;
+  onProportionsLockedChange: (locked: boolean) => void;
   onAspectRatioChange: (ratio: number) => void;
 };
 
@@ -70,8 +72,10 @@ export default function ScalingPreview({
   previewUrl,
   widthMm,
   heightMm,
+  proportionsLocked,
   onWidthChange,
   onHeightChange,
+  onProportionsLockedChange,
   onAspectRatioChange,
 }: ScalingPreviewProps) {
   const gridRef = useRef<HTMLDivElement>(null);
@@ -240,6 +244,18 @@ export default function ScalingPreview({
     if (!drag) return;
     const nextWidth = drag.startWidth + (event.clientX - drag.startX) / drag.pixelsPerMm;
     const nextHeight = drag.startHeight - (event.clientY - drag.startY) / drag.pixelsPerMm;
+
+    if (proportionsLocked) {
+      const widthScaleChange = Math.abs(nextWidth / drag.startWidth - 1);
+      const heightScaleChange = Math.abs(nextHeight / drag.startHeight - 1);
+      if (widthScaleChange >= heightScaleChange) {
+        onWidthChange(nextWidth);
+      } else {
+        onHeightChange(nextHeight);
+      }
+      return;
+    }
+
     onWidthChange(Math.min(BED_SIZE_MM, Math.max(1, Math.round(nextWidth))));
     onHeightChange(Math.min(BED_SIZE_MM, Math.max(1, Math.round(nextHeight))));
   };
@@ -407,7 +423,11 @@ export default function ScalingPreview({
                   )}
                   <button
                     type="button"
-                    aria-label="Drag to resize the model width and height independently"
+                    aria-label={
+                      proportionsLocked
+                        ? "Drag to resize the model while preserving its proportions"
+                        : "Drag to resize the model width and height independently"
+                    }
                     onPointerDown={handleResizePointerDown}
                     onPointerMove={handleResizePointerMove}
                     onPointerUp={stopResize}
@@ -499,9 +519,28 @@ export default function ScalingPreview({
             </span>
           </label>
         </div>
-        <p className="mt-3 text-right font-mono text-[10px] text-[#7d8794]">
-          Width and height scale independently · 250 mm bed reference
-        </p>
+        <div className="mt-3 flex flex-wrap items-center justify-end gap-3">
+          <button
+            type="button"
+            aria-pressed={proportionsLocked}
+            onClick={() => onProportionsLockedChange(!proportionsLocked)}
+            className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium transition ${
+              proportionsLocked
+                ? "border-[#3b82f6]/50 bg-[#17243a] text-[#93c5fd]"
+                : "border-[#2a323d] bg-[#0b0d10] text-[#9ca3af] hover:border-[#3b82f6]/50 hover:text-[#f3f4f6]"
+            }`}
+          >
+            {proportionsLocked ? (
+              <Lock aria-hidden="true" className="size-3.5" />
+            ) : (
+              <Unlock aria-hidden="true" className="size-3.5" />
+            )}
+            Lock proportions
+          </button>
+          <p className="font-mono text-[10px] text-[#7d8794]">
+            {proportionsLocked ? "Proportions locked" : "Width and height scale independently"} · 250 mm bed reference
+          </p>
+        </div>
 
         {showCutout && (
           <p className="mt-3 flex items-center gap-2 text-[10px] leading-5 text-[#7d8794]">
