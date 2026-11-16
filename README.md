@@ -1,6 +1,6 @@
 # Capture & Create - 3D Print Studio
 
-A Next.js App Router app for generating 3D models from one to four uploaded photos. The interface includes client-side background removal and subject cropping with approval, multi-angle image preview, task progress, interactive GLB inspection, GLB/STL downloads, editable dimensions, a calibration preview, and a local 3D creations carousel.
+A Next.js App Router app for generating 3D models from one to four uploaded photos. The interface includes client-side background removal and subject cropping with approval, multi-angle image preview, task progress, interactive GLB inspection, GLB/STL downloads, editable dimensions, a free model browser, a calibration preview, and a local 3D creations carousel.
 
 ## Run locally
 
@@ -26,3 +26,5 @@ Uploads are limited to four JPG, PNG, or WebP images, each up to 20 MB. Each cap
 The in-browser viewer uses React Three Fiber and Drei for orbit, zoom, and pan controls. The GLB is streamed through the server to avoid browser cross-origin restrictions when loading model assets. Its grid represents a 250 × 250 mm printer bed; the GLB preview and binary STL export use the configured X, Y, and Z dimensions. STL-only output can still be downloaded but cannot be previewed or rescaled in the browser.
 
 Completed GLB models are stored in IndexedDB on the current device with their dimensions and a seven-day expiration timestamp. Expired records are purged when the creations library loads. The centered carousel model uses a lightweight animated React Three Fiber viewport; side models use paused, on-demand canvases.
+
+The free asset browser reads the public Khronos glTF Sample Assets manifest and presents a curated set of downloadable CC0 and CC BY models. Models can be searched or filtered by Props, Furniture, Nature, and Characters, opened directly in the existing editor, resized, downloaded, and saved to the local Creations library.
