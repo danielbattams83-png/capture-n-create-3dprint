@@ -3,7 +3,7 @@
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { Lock, Maximize2, Ruler, Scissors, SlidersHorizontal, Unlock } from "lucide-react";
+import { Lock, Maximize2, Ruler, Unlock } from "lucide-react";
 
 type ScalingPreviewProps = {
   file: File;
@@ -28,45 +28,6 @@ type DragState = {
 const BED_SIZE_MM = 250;
 const RULER_MARKS = [0, 50, 100, 150, 200, 250];
 
-function colorDistance(
-  red: number,
-  green: number,
-  blue: number,
-  color: [number, number, number],
-) {
-  return Math.hypot(red - color[0], green - color[1], blue - color[2]);
-}
-
-function sampleCorner(
-  data: Uint8ClampedArray,
-  width: number,
-  height: number,
-  x: number,
-  y: number,
-): [number, number, number] {
-  let red = 0;
-  let green = 0;
-  let blue = 0;
-  let count = 0;
-
-  for (let offsetY = 0; offsetY < 3; offsetY += 1) {
-    for (let offsetX = 0; offsetX < 3; offsetX += 1) {
-      const pixelX = Math.min(width - 1, x + offsetX);
-      const pixelY = Math.min(height - 1, y + offsetY);
-      const index = (pixelY * width + pixelX) * 4;
-      if (data[index + 3] === 0) continue;
-      red += data[index];
-      green += data[index + 1];
-      blue += data[index + 2];
-      count += 1;
-    }
-  }
-
-  return count > 0
-    ? [red / count, green / count, blue / count]
-    : [0, 0, 0];
-}
-
 export default function ScalingPreview({
   file,
   previewUrl,
@@ -79,12 +40,8 @@ export default function ScalingPreview({
   onAspectRatioChange,
 }: ScalingPreviewProps) {
   const gridRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const dragRef = useRef<DragState | null>(null);
   const [sourceImage, setSourceImage] = useState<HTMLImageElement | null>(null);
-  const [tolerance, setTolerance] = useState(25);
-  const [showCutout, setShowCutout] = useState(true);
-  const [autoCropApplied, setAutoCropApplied] = useState(false);
   const [imageError, setImageError] = useState("");
 
   useEffect(() => {
@@ -105,124 +62,6 @@ export default function ScalingPreview({
       image.onerror = null;
     };
   }, [file, onAspectRatioChange, previewUrl]);
-
-  useEffect(() => {
-    const output = canvasRef.current;
-    if (!output || !showCutout || !sourceImage) {
-      return;
-    }
-
-    const frame = window.requestAnimationFrame(() => {
-      const maxBufferSize = 360;
-      const scale = Math.min(
-        1,
-        maxBufferSize / Math.max(sourceImage.naturalWidth, sourceImage.naturalHeight),
-      );
-      const width = Math.max(1, Math.round(sourceImage.naturalWidth * scale));
-      const height = Math.max(1, Math.round(sourceImage.naturalHeight * scale));
-      const buffer = document.createElement("canvas");
-      buffer.width = width;
-      buffer.height = height;
-      const bufferContext = buffer.getContext("2d", { willReadFrequently: true });
-      const outputContext = output.getContext("2d");
-      if (!bufferContext || !outputContext) {
-        setImageError("The cutout preview is unavailable in this browser.");
-        return;
-      }
-
-      bufferContext.drawImage(sourceImage, 0, 0, width, height);
-      const imageData = bufferContext.getImageData(0, 0, width, height);
-      const pixels = imageData.data;
-      const cornerColors = [
-        sampleCorner(pixels, width, height, 0, 0),
-        sampleCorner(pixels, width, height, width - 3, 0),
-        sampleCorner(pixels, width, height, 0, height - 3),
-        sampleCorner(pixels, width, height, width - 3, height - 3),
-      ];
-      const threshold = (tolerance / 100) * Math.sqrt(3 * 255 * 255);
-      const pixelCount = width * height;
-      const queue = new Int32Array(pixelCount);
-      let queueStart = 0;
-      let queueEnd = 0;
-
-      const enqueueIfBackground = (pixel: number) => {
-        const index = pixel * 4;
-        if (pixels[index + 3] === 0) return;
-        const matchesCorner = cornerColors.some(
-          (color) =>
-            colorDistance(pixels[index], pixels[index + 1], pixels[index + 2], color) <=
-            threshold,
-        );
-        if (!matchesCorner) return;
-        pixels[index + 3] = 0;
-        queue[queueEnd] = pixel;
-        queueEnd += 1;
-      };
-
-      for (let x = 0; x < width; x += 1) {
-        enqueueIfBackground(x);
-        enqueueIfBackground((height - 1) * width + x);
-      }
-      for (let y = 1; y < height - 1; y += 1) {
-        enqueueIfBackground(y * width);
-        enqueueIfBackground(y * width + width - 1);
-      }
-
-      while (queueStart < queueEnd) {
-        const pixel = queue[queueStart];
-        queueStart += 1;
-        const x = pixel % width;
-        if (x > 0) enqueueIfBackground(pixel - 1);
-        if (x + 1 < width) enqueueIfBackground(pixel + 1);
-        if (pixel >= width) enqueueIfBackground(pixel - width);
-        if (pixel + width < pixelCount) enqueueIfBackground(pixel + width);
-      }
-
-      let minX = width;
-      let minY = height;
-      let maxX = -1;
-      let maxY = -1;
-      for (let pixel = 0; pixel < pixelCount; pixel += 1) {
-        const index = pixel * 4;
-        if (pixels[index + 3] === 0) continue;
-        const x = pixel % width;
-        const y = Math.floor(pixel / width);
-        minX = Math.min(minX, x);
-        minY = Math.min(minY, y);
-        maxX = Math.max(maxX, x);
-        maxY = Math.max(maxY, y);
-        pixels[index] = 59;
-        pixels[index + 1] = 130;
-        pixels[index + 2] = 246;
-        pixels[index + 3] = Math.round(pixels[index + 3] * 0.78);
-      }
-
-      bufferContext.putImageData(imageData, 0, 0);
-      const hasSubject = maxY >= minY && maxX >= minX;
-      const cropX = hasSubject ? minX : 0;
-      const cropY = hasSubject ? minY : 0;
-      const cropWidth = hasSubject ? maxX - minX + 1 : width;
-      const cropHeight = hasSubject ? maxY - minY + 1 : height;
-      output.width = cropWidth;
-      output.height = cropHeight;
-      outputContext.clearRect(0, 0, cropWidth, cropHeight);
-      outputContext.drawImage(
-        buffer,
-        cropX,
-        cropY,
-        cropWidth,
-        cropHeight,
-        0,
-        0,
-        cropWidth,
-        cropHeight,
-      );
-      setAutoCropApplied(hasSubject);
-      setImageError("");
-    });
-
-    return () => window.cancelAnimationFrame(frame);
-  }, [showCutout, sourceImage, tolerance]);
 
   const handleResizePointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
     const grid = gridRef.current;
@@ -289,64 +128,6 @@ export default function ScalingPreview({
       </div>
 
       <div className="p-4 sm:p-5">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div
-            className="inline-flex rounded-lg border border-[#232832] bg-[#0b0d10] p-1"
-            role="group"
-            aria-label="Preview mode"
-          >
-            <button
-              type="button"
-              onClick={() => setShowCutout(false)}
-              aria-pressed={!showCutout}
-              className={`rounded-md px-3 py-2 text-xs font-medium transition ${
-                showCutout
-                  ? "text-[#9ca3af] hover:bg-[#14171d]"
-                  : "bg-[#232832] text-[#f3f4f6]"
-              }`}
-            >
-              Original Photo
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowCutout(true)}
-              aria-pressed={showCutout}
-              className={`flex items-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium transition ${
-                showCutout
-                  ? "bg-[#17243a] text-[#60a5fa]"
-                  : "text-[#9ca3af] hover:bg-[#14171d]"
-              }`}
-            >
-              <Scissors aria-hidden="true" className="size-3.5" />
-              Proposed Model Extents
-            </button>
-          </div>
-
-          {showCutout && (
-            <label className="flex min-w-[210px] flex-1 items-center gap-3 sm:max-w-[300px]">
-              <SlidersHorizontal
-                aria-hidden="true"
-                className="size-4 shrink-0 text-[#9ca3af]"
-              />
-              <span className="whitespace-nowrap text-[11px] text-[#9ca3af]">
-                Cutout tolerance
-              </span>
-              <input
-                aria-label="Cutout tolerance"
-                type="range"
-                min="0"
-                max="100"
-                value={tolerance}
-                onChange={(event) => setTolerance(Number(event.target.value))}
-                className="studio-range min-w-0 flex-1"
-              />
-              <span className="w-10 text-right font-mono text-xs tabular-nums text-[#60a5fa]">
-                {tolerance}%
-              </span>
-            </label>
-          )}
-        </div>
-
         <div className="mx-auto max-w-[660px]">
           <div className="mb-1 ml-10 flex h-6 items-end justify-between border-b border-[#2a323d] pl-1">
             {RULER_MARKS.map((mark) => (
@@ -404,23 +185,8 @@ export default function ScalingPreview({
                     fill
                     unoptimized
                     sizes="(max-width: 640px) 65vw, 35vw"
-                    className={`object-fill transition-opacity ${
-                      showCutout ? "opacity-0" : "opacity-100"
-                    }`}
+                    className="object-fill"
                   />
-                  <canvas
-                    ref={canvasRef}
-                    aria-label="Background-removed and auto-cropped proposed model preview"
-                    role="img"
-                    className={`absolute inset-0 size-full transition-opacity drop-shadow-[0_0_8px_rgba(59,130,246,0.7)] ${
-                      showCutout ? "opacity-100" : "opacity-0"
-                    }`}
-                  />
-                  {showCutout && autoCropApplied && (
-                    <span className="pointer-events-none absolute left-2 top-2 z-20 whitespace-nowrap rounded border border-[#3b82f6]/40 bg-[#0b0d10]/85 px-2 py-1 font-mono text-[9px] text-[#93c5fd]">
-                      BACKGROUND REMOVED · AUTO-CROPPED
-                    </span>
-                  )}
                   <button
                     type="button"
                     aria-label={
@@ -541,13 +307,6 @@ export default function ScalingPreview({
             {proportionsLocked ? "Proportions locked" : "Width and height scale independently"} · 250 mm bed reference
           </p>
         </div>
-
-        {showCutout && (
-          <p className="mt-3 flex items-center gap-2 text-[10px] leading-5 text-[#7d8794]">
-            <SlidersHorizontal aria-hidden="true" className="size-3.5 shrink-0" />
-            The scaling preview is cropped to the detected model extents. This is a local visual guide only; the original image file is sent unchanged for generation.
-          </p>
-        )}
       </div>
     </section>
   );

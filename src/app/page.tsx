@@ -79,7 +79,7 @@ export default function Home() {
   const [previewError, setPreviewError] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [exportModel, setExportModel] = useState<ModelExportAction | null>(null);
-  const [lockedAspectRatio, setLockedAspectRatio] = useState<number | null>(null);
+  const [lockedAspectRatio, setLockedAspectRatio] = useState<number | null>(1);
   const activeRequest = useRef<AbortController | null>(null);
   const previewUrls = useRef<string[]>([]);
   const previewTask = useRef<PreviewTask | null>(null);
