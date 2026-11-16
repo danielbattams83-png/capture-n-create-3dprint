@@ -21,6 +21,10 @@ export type StoredCreation = {
   dimensions: CreationDimensions;
 };
 
+export function createCreationId(prefix = "creation"): string {
+  return `${prefix}-${crypto.randomUUID()}`;
+}
+
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);

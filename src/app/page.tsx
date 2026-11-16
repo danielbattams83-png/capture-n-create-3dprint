@@ -11,8 +11,12 @@ import CameraCapture from "@/components/camera-capture";
 import GenerationModal from "@/components/generation-modal";
 import ImagePreprocessingModal from "@/components/image-preprocessing-modal";
 import type { ProcessedImageReview } from "@/components/image-preprocessing-modal";
+import AssetBrowser from "@/components/asset-browser";
+import TextureGenerator from "@/components/texture-generator";
 import { isolateAndCropSubject } from "@/lib/image-preprocessing";
+import type { KhronosAsset } from "@/lib/khronos-assets";
 import {
+  createCreationId,
   saveCreation,
   updateCreationDimensions,
   type StoredCreation,
@@ -104,11 +108,21 @@ export default function Home() {
   const [progress, setProgress] = useState(0);
   const [modelUrls, setModelUrls] = useState<ModelUrls | null>(null);
   const [previewModelUrl, setPreviewModelUrl] = useState<string | null>(null);
+  const [activeModelBlob, setActiveModelBlob] = useState<Blob | null>(null);
+  const [activeModelName, setActiveModelName] = useState("");
   const [previewError, setPreviewError] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [exportModel, setExportModel] = useState<ModelExportAction | null>(null);
   const [creationsRefreshKey, setCreationsRefreshKey] = useState(0);
   const [editingCreationId, setEditingCreationId] = useState<string | null>(null);
+  const [catalogModel, setCatalogModel] = useState<{
+    asset: KhronosAsset;
+    blob: Blob;
+    savedId: string | null;
+  } | null>(null);
+  const [catalogSaveStatus, setCatalogSaveStatus] = useState<
+    "idle" | "saving" | "saved" | "error"
+  >("idle");
   const [lockedAspectRatio, setLockedAspectRatio] = useState<number | null>(1);
   const activeRequest = useRef<AbortController | null>(null);
   const previewUrls = useRef<string[]>([]);
@@ -231,6 +245,8 @@ export default function Home() {
     setPreviewLoading(true);
     setPreviewError("");
     setPreviewModelUrl(null);
+    setCatalogModel(null);
+    setCatalogSaveStatus("idle");
 
     try {
       const response = await fetch("/api/model-preview", {
@@ -254,6 +270,8 @@ export default function Home() {
       }
       if (!signal.aborted) {
         setPreviewModelUrl(URL.createObjectURL(modelBlob));
+        setActiveModelBlob(modelBlob);
+        setActiveModelName(task.creationName);
         try {
           await saveCreation({
             id: task.taskId,
@@ -304,11 +322,15 @@ export default function Home() {
     setExportError("");
     setModelUrls(null);
     setPreviewModelUrl(null);
+    setActiveModelBlob(null);
+    setActiveModelName("");
     setPreviewError("");
     setPreviewLoading(false);
+    setCatalogModel(null);
+    setCatalogSaveStatus("idle");
+    setEditingCreationId(null);
     previewTask.current = null;
     setExportModel(null);
-    setEditingCreationId(null);
     setProgress(0);
     setFailedStage(null);
     setStatus("uploading");
@@ -602,11 +624,15 @@ export default function Home() {
     setProgress(0);
     setModelUrls(null);
     setPreviewModelUrl(null);
+    setActiveModelBlob(null);
+    setActiveModelName("");
     setPreviewError("");
     setPreviewLoading(false);
     previewTask.current = null;
     setExportModel(null);
     setEditingCreationId(null);
+    setCatalogModel(null);
+    setCatalogSaveStatus("idle");
   };
 
   const editCreation = (creation: StoredCreation) => {
@@ -614,6 +640,8 @@ export default function Home() {
     activeRequest.current = null;
     const modelUrl = URL.createObjectURL(creation.model);
     setPreviewModelUrl(modelUrl);
+    setActiveModelBlob(creation.model);
+    setActiveModelName(creation.name);
     setModelUrls({ glb: modelUrl });
     setDimensions({
       x: String(creation.dimensions.width),
@@ -622,6 +650,8 @@ export default function Home() {
     });
     setLockedAspectRatio(creation.dimensions.width / creation.dimensions.height);
     setEditingCreationId(creation.id);
+    setCatalogModel(null);
+    setCatalogSaveStatus("idle");
     setGenerationModalOpen(false);
     setPreviewError("");
     setPreviewLoading(false);
@@ -639,6 +669,113 @@ export default function Home() {
           ?.scrollIntoView({ behavior: "smooth", block: "center" }),
       0,
     );
+  };
+
+  const editCatalogAsset = async (asset: KhronosAsset) => {
+    activeRequest.current?.abort();
+    activeRequest.current = null;
+    setPreviewLoading(true);
+    setPreviewError("");
+
+    try {
+      const response = await fetch(asset.modelUrl);
+      if (!response.ok) {
+        throw new Error(`Could not download ${asset.label} (${response.status}).`);
+      }
+      const modelBlob = await response.blob();
+      if (modelBlob.size === 0) {
+        throw new Error(`${asset.label} returned an empty model file.`);
+      }
+
+      const modelUrl = URL.createObjectURL(modelBlob);
+      setPreviewModelUrl(modelUrl);
+      setActiveModelBlob(modelBlob);
+      setActiveModelName(`${asset.label} edit`);
+      setModelUrls({ glb: modelUrl });
+      setDimensions({ x: "100", y: "100", z: "100" });
+      setLockedAspectRatio(1);
+      setEditingCreationId(null);
+      setCatalogModel({ asset, blob: modelBlob, savedId: null });
+      setCatalogSaveStatus("idle");
+      setGenerationModalOpen(false);
+      setExportError("");
+      setExportModel(null);
+      setError("");
+      setFailedStage(null);
+      setProgress(100);
+      setStatus("ready");
+      previewTask.current = null;
+      window.setTimeout(
+        () =>
+          document
+            .getElementById("model-preview")
+            ?.scrollIntoView({ behavior: "smooth", block: "center" }),
+        0,
+      );
+    } catch (assetError) {
+      throw assetError instanceof Error
+        ? assetError
+        : new Error("This model could not be opened in the editor.");
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const saveCatalogModel = async () => {
+    if (!catalogModel || catalogModel.savedId) return;
+    setCatalogSaveStatus("saving");
+    try {
+      const creation = await saveCreation({
+        id: createCreationId(`khronos-${catalogModel.asset.id}`),
+        name: `${catalogModel.asset.label} edit`,
+        model: catalogModel.blob,
+        dimensions: {
+          width: getDimensionValue("x"),
+          depth: getDimensionValue("y"),
+          height: getDimensionValue("z"),
+        },
+      });
+      setCatalogModel((current) =>
+        current ? { ...current, savedId: creation.id } : current,
+      );
+      setEditingCreationId(creation.id);
+      setCreationsRefreshKey((current) => current + 1);
+      setCatalogSaveStatus("saved");
+    } catch (storageError) {
+      console.error("Could not save the catalog model to Creations.", storageError);
+      setCatalogSaveStatus("error");
+    }
+  };
+
+  const applyGeneratedTexture = async (texturedModel: Blob) => {
+    const modelUrl = URL.createObjectURL(texturedModel);
+    setPreviewModelUrl(modelUrl);
+    setModelUrls({ glb: modelUrl });
+    setActiveModelBlob(texturedModel);
+    setCatalogModel((current) =>
+      current ? { ...current, blob: texturedModel } : current,
+    );
+    setPreviewError("");
+    setExportError("");
+    setExportModel(null);
+
+    if (editingCreationId) {
+      try {
+        await saveCreation({
+          id: editingCreationId,
+          name: activeModelName || "Textured model",
+          model: texturedModel,
+          dimensions: {
+            width: getDimensionValue("x"),
+            depth: getDimensionValue("y"),
+            height: getDimensionValue("z"),
+          },
+        });
+        setCreationsRefreshKey((current) => current + 1);
+      } catch (storageError) {
+        console.error("Could not update the local creation texture.", storageError);
+      }
+    }
   };
 
   return (
@@ -685,7 +822,13 @@ export default function Home() {
             <section id="model-preview" className="overflow-hidden rounded-[22px] border border-[#e8e9e4] bg-white shadow-[0_8px_30px_rgba(27,31,24,0.035)]">
             <div className="flex items-center justify-between border-b border-[#efefec] px-5 py-4 sm:px-7">
               <div>
-                <h2 className="text-sm font-semibold">{status === "ready" && modelUrls?.glb ? "3D model preview" : "Your photos"}</h2>
+                <h2 className="text-sm font-semibold">
+                  {catalogModel
+                    ? `Editing ${catalogModel.asset.label}`
+                    : status === "ready" && modelUrls?.glb
+                      ? "3D model preview"
+                      : "Your photos"}
+                </h2>
                 <p className="mt-1 text-xs text-[#969991]">
                   {status === "ready" && modelUrls?.glb
                     ? "Inspect your model before printing"
@@ -934,6 +1077,45 @@ export default function Home() {
                   )}
                 </div>
               )}
+              {status === "ready" && activeModelBlob && previewModelUrl && (
+                <TextureGenerator
+                  model={activeModelBlob}
+                  onTextureReady={applyGeneratedTexture}
+                />
+              )}
+              {catalogModel && (
+                <div className="mt-3 rounded-xl border border-[#d9e4f7] bg-[#f4f7fc] px-4 py-3">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="mr-auto">
+                      <p className="text-xs font-semibold text-[#34445e]">
+                        Keep this edit
+                      </p>
+                      <p className="mt-1 text-[11px] text-[#748097]">
+                        Save the model and current dimensions locally for 7 days.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void saveCatalogModel()}
+                      disabled={
+                        catalogSaveStatus === "saving" || catalogSaveStatus === "saved"
+                      }
+                      className="rounded-lg bg-[#3975d7] px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-[#2f65bd] disabled:cursor-default disabled:bg-[#7198d8]"
+                    >
+                      {catalogSaveStatus === "saving"
+                        ? "Saving…"
+                        : catalogSaveStatus === "saved"
+                          ? "Saved to Creations"
+                          : "Save to Creations"}
+                    </button>
+                  </div>
+                  {catalogSaveStatus === "error" && (
+                    <p role="alert" className="mt-2 text-xs font-medium text-[#a64040]">
+                      This model could not be saved locally. Please try again.
+                    </p>
+                  )}
+                </div>
+              )}
               {exportError && <p role="alert" className="mt-2 text-xs font-medium text-[#b34e3a]">{exportError}</p>}
             </div>
             <div className="flex items-center gap-2 border-t border-[#efefec] px-5 py-3.5 text-[11px] text-[#93968e] sm:px-7">
@@ -1015,6 +1197,8 @@ export default function Home() {
             </aside>
           </div>
         </div>
+
+        <AssetBrowser onEdit={editCatalogAsset} />
 
         <CreationsCarousel refreshKey={creationsRefreshKey} onEdit={editCreation} />
 

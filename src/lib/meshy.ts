@@ -34,7 +34,7 @@ export function isSameOrigin(request: Request): boolean {
   }
 }
 
-export type MeshyTaskType = "image-to-3d" | "multi-image-to-3d";
+export type MeshyTaskType = "image-to-3d" | "multi-image-to-3d" | "retexture";
 
 export function createTaskToken(taskId: string, taskType: MeshyTaskType): string {
   const apiKey = process.env.MESHY_API_KEY;
