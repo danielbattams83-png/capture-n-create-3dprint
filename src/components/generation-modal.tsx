@@ -151,7 +151,7 @@ export default function GenerationModal({
             <div>
               <p className="text-sm font-semibold text-[#f3f4f6]">Source photos</p>
               <p className="mt-1 text-xs text-[#9ca3af]">
-                {images.length} {images.length === 1 ? "view" : "views"} · original files stay unchanged
+                {images.length} isolated {images.length === 1 ? "view" : "views"} · approved before upload
               </p>
             </div>
             <span className="rounded-full border border-[#232832] bg-[#0b0d10] px-3 py-1.5 font-mono text-[10px] tabular-nums text-[#9ca3af]">
