@@ -79,7 +79,7 @@ export default function Home() {
   const [previewError, setPreviewError] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [exportModel, setExportModel] = useState<ModelExportAction | null>(null);
-  const [aspectRatio, setAspectRatio] = useState<number | null>(null);
+  const [lockedAspectRatio, setLockedAspectRatio] = useState<number | null>(null);
   const activeRequest = useRef<AbortController | null>(null);
   const previewUrls = useRef<string[]>([]);
   const previewTask = useRef<PreviewTask | null>(null);
@@ -104,7 +104,7 @@ export default function Home() {
 
   const handleAspectRatioChange = useCallback((ratio: number) => {
     if (!Number.isFinite(ratio) || ratio <= 0) return;
-    setAspectRatio(ratio);
+    setLockedAspectRatio((current) => (current === null ? null : ratio));
     setDimensions((current) => {
       const maxHeight = Math.max(1, Math.min(250, Math.floor(250 / ratio)));
       const height = Math.min(maxHeight, Number(current.z) || 100);
@@ -116,23 +116,62 @@ export default function Home() {
     });
   }, []);
 
+  const handlePreviewWidthChange = useCallback(
+    (width: number) => {
+      if (lockedAspectRatio) {
+        const minWidth = Math.max(1, lockedAspectRatio);
+        const maxWidth = Math.min(250, 250 * lockedAspectRatio);
+        const boundedWidth = Math.min(maxWidth, Math.max(minWidth, width));
+        const boundedHeight = boundedWidth / lockedAspectRatio;
+        setDimensions((current) => ({
+          ...current,
+          x: String(Math.round(boundedWidth * 10) / 10),
+          z: String(Math.round(boundedHeight * 10) / 10),
+        }));
+        return;
+      }
+
+      const boundedWidth = Math.min(250, Math.max(1, width));
+      setDimensions((current) => ({ ...current, x: String(boundedWidth) }));
+    },
+    [lockedAspectRatio],
+  );
+
   const handlePreviewHeightChange = useCallback(
     (height: number) => {
-      const maxHeight = aspectRatio
-        ? Math.max(1, Math.min(250, Math.floor(250 / aspectRatio)))
-        : 250;
-      const boundedHeight = Math.min(maxHeight, Math.max(1, height));
-      setDimensions((current) => ({
-        ...current,
-        x: String(
-          aspectRatio
-            ? Math.round(boundedHeight * aspectRatio)
-            : Number(current.x) || 100,
-        ),
-        z: String(boundedHeight),
-      }));
+      if (lockedAspectRatio) {
+        const minHeight = Math.max(1, 1 / lockedAspectRatio);
+        const maxHeight = Math.min(250, 250 / lockedAspectRatio);
+        const boundedHeight = Math.min(maxHeight, Math.max(minHeight, height));
+        const boundedWidth = boundedHeight * lockedAspectRatio;
+        setDimensions((current) => ({
+          ...current,
+          x: String(Math.round(boundedWidth * 10) / 10),
+          z: String(Math.round(boundedHeight * 10) / 10),
+        }));
+        return;
+      }
+
+      const boundedHeight = Math.min(250, Math.max(1, height));
+      setDimensions((current) => ({ ...current, z: String(boundedHeight) }));
     },
-    [aspectRatio],
+    [lockedAspectRatio],
+  );
+
+  const handleProportionsLockedChange = useCallback(
+    (locked: boolean) => {
+      if (!locked) {
+        setLockedAspectRatio(null);
+        return;
+      }
+
+      const width = Number(dimensions.x);
+      const height = Number(dimensions.z);
+      if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
+        setLockedAspectRatio(width / height);
+      }
+    },
+    [dimensions.x, dimensions.z],
   );
 
   const loadModelPreview = async (task: PreviewTask, signal: AbortSignal) => {
@@ -365,7 +404,6 @@ export default function Home() {
       previewUrls.current = previewUrls.current.filter((url) => url !== removed.previewUrl);
     }
     setImages((current) => current.filter((_, index) => index !== indexToRemove));
-    if (indexToRemove === 0) setAspectRatio(null);
     activeRequest.current?.abort();
     activeRequest.current = null;
     setGenerationModalOpen(false);
@@ -383,29 +421,18 @@ export default function Home() {
   };
 
   const updateDimension = (dimension: PrintDimension, value: string) => {
-    if (aspectRatio && dimension === "x" && value !== "") {
+    if (value !== "" && dimension === "x" && lockedAspectRatio) {
       const width = Number(value);
       if (Number.isFinite(width) && width > 0) {
-        const maxHeight = Math.max(1, Math.min(250, Math.floor(250 / aspectRatio)));
-        const height = Math.max(1, Math.min(maxHeight, width / aspectRatio));
-        setDimensions((current) => ({
-          ...current,
-          x: String(Math.round(height * aspectRatio)),
-          z: String(height),
-        }));
+        handlePreviewWidthChange(width);
         return;
       }
     }
 
-    if (aspectRatio && dimension === "z" && value !== "") {
-      const maxHeight = Math.max(1, Math.min(250, Math.floor(250 / aspectRatio)));
-      const height = Math.max(1, Math.min(maxHeight, Number(value)));
+    if (value !== "" && dimension === "z" && lockedAspectRatio) {
+      const height = Number(value);
       if (Number.isFinite(height) && height > 0) {
-        setDimensions((current) => ({
-          ...current,
-          x: String(Math.round(height * aspectRatio)),
-          z: String(height),
-        }));
+        handlePreviewHeightChange(height);
         return;
       }
     }
@@ -425,7 +452,6 @@ export default function Home() {
     previewUrls.current = [];
     setImages([]);
     setGenerationModalOpen(false);
-    setAspectRatio(null);
     setFailedStage(null);
     setStatus("idle");
     setError("");
@@ -476,7 +502,11 @@ export default function Home() {
         </div>
 
         <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1.65fr)_minmax(320px,0.85fr)]">
-          <section id="model-preview" className="overflow-hidden rounded-[22px] border border-[#e8e9e4] bg-white shadow-[0_8px_30px_rgba(27,31,24,0.035)]">
+          <div className="relative pt-10">
+            <span className="absolute right-5 top-0 flex h-10 items-center rounded-t-xl border border-b-0 border-[#232832] bg-[#17243a] px-5 font-mono text-sm font-semibold uppercase tracking-[0.12em] text-[#93c5fd]">
+              Step One
+            </span>
+            <section id="model-preview" className="overflow-hidden rounded-[22px] border border-[#e8e9e4] bg-white shadow-[0_8px_30px_rgba(27,31,24,0.035)]">
             <div className="flex items-center justify-between border-b border-[#efefec] px-5 py-4 sm:px-7">
               <div>
                 <h2 className="text-sm font-semibold">{status === "ready" && modelUrls?.glb ? "3D model preview" : "Your photos"}</h2>
@@ -486,7 +516,6 @@ export default function Home() {
                     : "Upload up to four views of the same object"}
                 </p>
               </div>
-              <span className="rounded-full bg-[#17243a] px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.1em] text-[#60a5fa]">Step 01</span>
             </div>
 
             <div className="p-4 sm:p-6">
@@ -618,9 +647,12 @@ export default function Home() {
                 <ScalingPreview
                   file={images[0].file}
                   previewUrl={images[0].previewUrl}
-                  widthMm={Math.round(getDimensionValue("z") * (aspectRatio ?? 1))}
+                  widthMm={getDimensionValue("x")}
                   heightMm={getDimensionValue("z")}
+                  proportionsLocked={lockedAspectRatio !== null}
+                  onWidthChange={handlePreviewWidthChange}
                   onHeightChange={handlePreviewHeightChange}
+                  onProportionsLockedChange={handleProportionsLockedChange}
                   onAspectRatioChange={handleAspectRatioChange}
                 />
               )}
@@ -732,16 +764,20 @@ export default function Home() {
               <LockKeyhole aria-hidden="true" className="size-4 shrink-0 text-[#60a5fa]" />
               Your photos are sent securely to our image-generation service.
             </div>
-          </section>
+            </section>
+          </div>
 
-          <aside className="rounded-[22px] border border-[#e8e9e4] bg-white p-5 shadow-[0_8px_30px_rgba(27,31,24,0.035)] sm:p-6">
+          <div className="relative pt-10">
+            <span className="absolute right-5 top-0 flex h-10 items-center rounded-t-xl border border-b-0 border-[#232832] bg-[#17243a] px-5 font-mono text-sm font-semibold uppercase tracking-[0.12em] text-[#93c5fd]">
+              Step Two
+            </span>
+            <aside className="rounded-[22px] border border-[#e8e9e4] bg-white p-5 shadow-[0_8px_30px_rgba(27,31,24,0.035)] sm:p-6">
             <div className="mb-6 flex items-start justify-between">
               <div>
                 <div className="mb-3 flex size-10 items-center justify-center rounded-xl bg-[#17243a] text-[#60a5fa]"><Box aria-hidden="true" className="size-5" /></div>
                 <h2 className="text-sm font-semibold">Print dimensions</h2>
                 <p className="mt-1 text-xs text-[#92958d]">Set the finished model size</p>
               </div>
-              <span className="rounded-full bg-[#17243a] px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.1em] text-[#60a5fa]">Step 02</span>
             </div>
 
             <div className="space-y-3">
@@ -758,14 +794,8 @@ export default function Home() {
                       aria-label={`${dimensionLabels[dimension]} in millimeters`}
                       type="number"
                       min="0.1"
-                      max={
-                        dimension === "x" && aspectRatio
-                          ? 250
-                          : dimension === "z" && aspectRatio
-                            ? Math.max(1, Math.min(250, Math.floor(250 / aspectRatio)))
-                            : undefined
-                      }
-                      step={dimension === "x" && aspectRatio ? "1" : "0.1"}
+                      max={dimension === "x" || dimension === "z" ? 250 : undefined}
+                      step="0.1"
                       value={dimensions[dimension]}
                       onChange={(event) => updateDimension(dimension, event.target.value)}
                       className="w-20 bg-transparent text-right font-mono text-sm font-semibold tabular-nums text-[#f3f4f6] outline-none"
@@ -806,7 +836,8 @@ export default function Home() {
             <p className="mt-3 text-center text-[10px] leading-5 text-[#a0a39b]">
               {status === "error" ? "Your photos are still here if you want to retry." : images.length ? "Dimensions are saved with this session." : "Add one to four photos of the same object."}
             </p>
-          </aside>
+            </aside>
+          </div>
         </div>
 
         <footer className="mt-9 flex flex-col gap-2 border-t border-[#e8e9e4] pt-5 text-[11px] text-[#a0a39b] sm:flex-row sm:items-center sm:justify-between">

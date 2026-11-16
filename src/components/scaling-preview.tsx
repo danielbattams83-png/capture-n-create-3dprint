@@ -3,19 +3,24 @@
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { Maximize2, Ruler, Scissors, SlidersHorizontal } from "lucide-react";
+import { Lock, Maximize2, Ruler, Scissors, SlidersHorizontal, Unlock } from "lucide-react";
 
 type ScalingPreviewProps = {
   file: File;
   previewUrl: string;
   widthMm: number;
   heightMm: number;
+  proportionsLocked: boolean;
+  onWidthChange: (width: number) => void;
   onHeightChange: (height: number) => void;
+  onProportionsLockedChange: (locked: boolean) => void;
   onAspectRatioChange: (ratio: number) => void;
 };
 
 type DragState = {
+  startX: number;
   startY: number;
+  startWidth: number;
   startHeight: number;
   pixelsPerMm: number;
 };
@@ -67,7 +72,10 @@ export default function ScalingPreview({
   previewUrl,
   widthMm,
   heightMm,
+  proportionsLocked,
+  onWidthChange,
   onHeightChange,
+  onProportionsLockedChange,
   onAspectRatioChange,
 }: ScalingPreviewProps) {
   const gridRef = useRef<HTMLDivElement>(null);
@@ -75,11 +83,8 @@ export default function ScalingPreview({
   const dragRef = useRef<DragState | null>(null);
   const [sourceImage, setSourceImage] = useState<HTMLImageElement | null>(null);
   const [tolerance, setTolerance] = useState(25);
-  const [showCutout, setShowCutout] = useState(false);
-  const [subjectBounds, setSubjectBounds] = useState<{
-    widthPercent: number;
-    heightPercent: number;
-  } | null>(null);
+  const [showCutout, setShowCutout] = useState(true);
+  const [autoCropApplied, setAutoCropApplied] = useState(false);
   const [imageError, setImageError] = useState("");
 
   useEffect(() => {
@@ -193,18 +198,26 @@ export default function ScalingPreview({
       }
 
       bufferContext.putImageData(imageData, 0, 0);
-      output.width = width;
-      output.height = height;
-      outputContext.clearRect(0, 0, width, height);
-      outputContext.drawImage(buffer, 0, 0);
-      setSubjectBounds(
-        maxY >= minY && maxX >= minX
-          ? {
-              widthPercent: ((maxX - minX + 1) / width) * 100,
-              heightPercent: ((maxY - minY + 1) / height) * 100,
-            }
-          : null,
+      const hasSubject = maxY >= minY && maxX >= minX;
+      const cropX = hasSubject ? minX : 0;
+      const cropY = hasSubject ? minY : 0;
+      const cropWidth = hasSubject ? maxX - minX + 1 : width;
+      const cropHeight = hasSubject ? maxY - minY + 1 : height;
+      output.width = cropWidth;
+      output.height = cropHeight;
+      outputContext.clearRect(0, 0, cropWidth, cropHeight);
+      outputContext.drawImage(
+        buffer,
+        cropX,
+        cropY,
+        cropWidth,
+        cropHeight,
+        0,
+        0,
+        cropWidth,
+        cropHeight,
       );
+      setAutoCropApplied(hasSubject);
       setImageError("");
     });
 
@@ -218,7 +231,9 @@ export default function ScalingPreview({
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
     dragRef.current = {
+      startX: event.clientX,
       startY: event.clientY,
+      startWidth: widthMm,
       startHeight: heightMm,
       pixelsPerMm: grid.clientWidth / BED_SIZE_MM,
     };
@@ -227,22 +242,30 @@ export default function ScalingPreview({
   const handleResizePointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
     const drag = dragRef.current;
     if (!drag) return;
+    const nextWidth = drag.startWidth + (event.clientX - drag.startX) / drag.pixelsPerMm;
     const nextHeight = drag.startHeight - (event.clientY - drag.startY) / drag.pixelsPerMm;
-    onHeightChange(Math.min(maxTargetHeight, Math.max(1, Math.round(nextHeight))));
+
+    if (proportionsLocked) {
+      const widthScaleChange = Math.abs(nextWidth / drag.startWidth - 1);
+      const heightScaleChange = Math.abs(nextHeight / drag.startHeight - 1);
+      if (widthScaleChange >= heightScaleChange) {
+        onWidthChange(nextWidth);
+      } else {
+        onHeightChange(nextHeight);
+      }
+      return;
+    }
+
+    onWidthChange(Math.min(BED_SIZE_MM, Math.max(1, Math.round(nextWidth))));
+    onHeightChange(Math.min(BED_SIZE_MM, Math.max(1, Math.round(nextHeight))));
   };
 
   const stopResize = () => {
     dragRef.current = null;
   };
 
-  const aspectRatio = sourceImage
-    ? sourceImage.naturalWidth / sourceImage.naturalHeight
-    : widthMm / heightMm;
-  const maxTargetHeight = Math.max(
-    1,
-    Math.min(BED_SIZE_MM, Math.floor(BED_SIZE_MM / aspectRatio)),
-  );
   const imageWidthPercent = (widthMm / BED_SIZE_MM) * 100;
+  const imageHeightPercent = (heightMm / BED_SIZE_MM) * 100;
 
   return (
     <section className="studio-panel mt-5 overflow-hidden rounded-2xl border border-[#232832] bg-[#14171d]">
@@ -295,7 +318,7 @@ export default function ScalingPreview({
               }`}
             >
               <Scissors aria-hidden="true" className="size-3.5" />
-              Cutout Silhouette
+              Proposed Model Extents
             </button>
           </div>
 
@@ -363,13 +386,12 @@ export default function ScalingPreview({
                 backgroundSize: "4% 4%, 4% 4%, 20% 20%, 20% 20%",
               }}
             >
-              <div className="pointer-events-none absolute inset-x-0 bottom-[8%] z-10 flex justify-center">
+              <div className="pointer-events-none absolute inset-0 z-10">
                 <div
-                  className="relative max-w-none"
+                  className="absolute bottom-0 left-1/2 max-w-none -translate-x-1/2"
                   style={{
                     width: `${imageWidthPercent}%`,
-                    aspectRatio: `${aspectRatio}`,
-                    maxHeight: "92%",
+                    height: `${imageHeightPercent}%`,
                   }}
                 >
                   <div className="pointer-events-none absolute -top-7 left-1/2 z-20 -translate-x-1/2 whitespace-nowrap rounded border border-[#3b82f6]/40 bg-[#0b0d10]/90 px-2 py-1 font-mono text-[10px] text-[#93c5fd]">
@@ -388,22 +410,24 @@ export default function ScalingPreview({
                   />
                   <canvas
                     ref={canvasRef}
-                    aria-label="Color-keyed cutout silhouette preview"
+                    aria-label="Background-removed and auto-cropped proposed model preview"
                     role="img"
                     className={`absolute inset-0 size-full transition-opacity drop-shadow-[0_0_8px_rgba(59,130,246,0.7)] ${
                       showCutout ? "opacity-100" : "opacity-0"
                     }`}
                   />
-                  {showCutout && subjectBounds && (
-                    <span className="pointer-events-none absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded border border-[#3b82f6]/40 bg-[#0b0d10]/85 px-2 py-1 font-mono text-[9px] text-[#93c5fd]">
-                      SUBJECT ≈{" "}
-                      {((widthMm * subjectBounds.widthPercent) / 100).toFixed(1)} ×{" "}
-                      {((heightMm * subjectBounds.heightPercent) / 100).toFixed(1)} MM
+                  {showCutout && autoCropApplied && (
+                    <span className="pointer-events-none absolute left-2 top-2 z-20 whitespace-nowrap rounded border border-[#3b82f6]/40 bg-[#0b0d10]/85 px-2 py-1 font-mono text-[9px] text-[#93c5fd]">
+                      BACKGROUND REMOVED · AUTO-CROPPED
                     </span>
                   )}
                   <button
                     type="button"
-                    aria-label="Drag to resize the model while preserving its aspect ratio"
+                    aria-label={
+                      proportionsLocked
+                        ? "Drag to resize the model while preserving its proportions"
+                        : "Drag to resize the model width and height independently"
+                    }
                     onPointerDown={handleResizePointerDown}
                     onPointerMove={handleResizePointerMove}
                     onPointerUp={stopResize}
@@ -429,7 +453,39 @@ export default function ScalingPreview({
           </div>
         </div>
 
-        <div className="mt-4 flex flex-col gap-3 border-t border-[#232832] pt-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="mt-4 grid gap-3 border-t border-[#232832] pt-4 sm:grid-cols-2">
+          <label className="flex min-w-0 items-center gap-3">
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-[#232832] bg-[#0b0d10] text-[#60a5fa]">
+              <Ruler aria-hidden="true" className="size-4" />
+            </span>
+            <span className="w-24 shrink-0 text-xs text-[#9ca3af]">Target width</span>
+            <input
+              aria-label="Target width in millimeters"
+              type="range"
+              min="1"
+              max={BED_SIZE_MM}
+              step="1"
+              value={Math.min(BED_SIZE_MM, Math.max(1, widthMm))}
+              onChange={(event) => onWidthChange(Number(event.target.value))}
+              className="studio-range min-w-0 flex-1"
+            />
+            <span className="flex items-center gap-1 font-mono text-xs tabular-nums text-[#f3f4f6]">
+              <input
+                aria-label="Target width in millimeters"
+                type="number"
+                min="1"
+                max={BED_SIZE_MM}
+                step="1"
+                value={widthMm}
+                onChange={(event) => {
+                  const value = Number(event.target.value);
+                  if (Number.isFinite(value) && value > 0) onWidthChange(value);
+                }}
+                className="w-14 bg-transparent text-right font-mono text-xs tabular-nums text-[#f3f4f6] outline-none"
+              />
+              mm
+            </span>
+          </label>
           <label className="flex min-w-0 flex-1 items-center gap-3">
             <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-[#232832] bg-[#0b0d10] text-[#60a5fa]">
               <Ruler aria-hidden="true" className="size-4" />
@@ -439,7 +495,7 @@ export default function ScalingPreview({
               aria-label="Target height in millimeters"
               type="range"
               min="1"
-              max={maxTargetHeight}
+              max={BED_SIZE_MM}
               step="1"
               value={Math.min(BED_SIZE_MM, Math.max(1, heightMm))}
               onChange={(event) => onHeightChange(Number(event.target.value))}
@@ -450,7 +506,7 @@ export default function ScalingPreview({
                 aria-label="Target height in millimeters"
                 type="number"
                 min="1"
-                max={maxTargetHeight}
+                max={BED_SIZE_MM}
                 step="1"
                 value={heightMm}
                 onChange={(event) => {
@@ -462,15 +518,34 @@ export default function ScalingPreview({
               mm
             </span>
           </label>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center justify-end gap-3">
+          <button
+            type="button"
+            aria-pressed={proportionsLocked}
+            onClick={() => onProportionsLockedChange(!proportionsLocked)}
+            className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium transition ${
+              proportionsLocked
+                ? "border-[#3b82f6]/50 bg-[#17243a] text-[#93c5fd]"
+                : "border-[#2a323d] bg-[#0b0d10] text-[#9ca3af] hover:border-[#3b82f6]/50 hover:text-[#f3f4f6]"
+            }`}
+          >
+            {proportionsLocked ? (
+              <Lock aria-hidden="true" className="size-3.5" />
+            ) : (
+              <Unlock aria-hidden="true" className="size-3.5" />
+            )}
+            Lock proportions
+          </button>
           <p className="font-mono text-[10px] text-[#7d8794]">
-            Aspect locked · 250 mm bed reference
+            {proportionsLocked ? "Proportions locked" : "Width and height scale independently"} · 250 mm bed reference
           </p>
         </div>
 
         {showCutout && (
           <p className="mt-3 flex items-center gap-2 text-[10px] leading-5 text-[#7d8794]">
             <SlidersHorizontal aria-hidden="true" className="size-3.5 shrink-0" />
-            Cutout is a local visual guide only. The original image file is sent unchanged for generation.
+            The scaling preview is cropped to the detected model extents. This is a local visual guide only; the original image file is sent unchanged for generation.
           </p>
         )}
       </div>
