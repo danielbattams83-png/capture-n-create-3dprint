@@ -41,11 +41,11 @@ export default function Header() {
   return (
     <>
       <header className="relative z-40 border-b border-white/[0.06] bg-[#0B0D12]">
-        <div className="relative mx-auto flex max-w-7xl flex-col items-center px-4 pb-4 sm:px-6 md:pb-5">
+        <div className="relative mx-auto flex max-w-7xl flex-col items-center px-0 pb-4 sm:px-6 md:pb-5">
         <Link
           href="/"
           onClick={scrollToTop}
-            className="relative block h-36 w-full max-w-2xl shrink-0 overflow-hidden focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-blue-400 sm:h-40 md:h-44"
+            className="relative block aspect-[2197/1431] w-full shrink-0 overflow-hidden focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-blue-400 md:h-44 md:max-w-2xl md:aspect-auto"
           aria-label="A.C.E.S. 3D Print Studio home"
         >
           <Image
@@ -54,9 +54,9 @@ export default function Header() {
             width={2197}
             height={1431}
             priority
-              className="size-full object-cover object-center"
+              className="h-auto w-full object-contain md:size-full"
           />
-            <span className="pointer-events-none absolute inset-x-0 bottom-0 h-14 bg-gradient-to-b from-transparent to-[#0B0D12]" />
+            <span className="pointer-events-none absolute inset-x-0 bottom-0 hidden h-8 bg-gradient-to-b from-transparent to-[#0B0D12] md:block" />
         </Link>
 
           <nav

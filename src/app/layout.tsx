@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono, Plus_Jakarta_Sans } from "next/font/google";
 import Script from "next/script";
+import AppLoadingScreen from "@/components/app-loading-screen";
 import Header from "@/components/header";
 import ScrollToTop from "@/components/scroll-to-top";
 import "./globals.css";
@@ -58,6 +59,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       <body
         className={`${plusJakartaSans.variable} ${inter.variable} ${jetBrainsMono.variable}`}
       >
+        <AppLoadingScreen />
         <Script id="scroll-restoration" strategy="beforeInteractive">
           {`history.scrollRestoration = "manual";
             const acesResetScroll = () => {
