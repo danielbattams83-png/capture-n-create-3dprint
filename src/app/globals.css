@@ -5,10 +5,21 @@
   background: #0b0d10;
   color: #f3f4f6;
   font-family: var(--font-inter), Arial, Helvetica, sans-serif;
+  --aces-surface: #182028;
+  --aces-surface-raised: #1e242b;
+  --aces-surface-deep: #11171d;
+  --aces-border: rgb(255 255 255 / 8%);
+  --aces-accent: #60a5fa;
+  --aces-radius-card: 22px;
+  --aces-shadow-card: 0 12px 32px -18px rgb(0 0 0 / 60%);
 }
 
 * {
   box-sizing: border-box;
+}
+
+html {
+  scroll-padding-top: 150px;
 }
 
 body {
@@ -17,6 +28,14 @@ body {
   background: #0b0d10;
   color: #f3f4f6;
   font-family: var(--font-inter), Arial, Helvetica, sans-serif;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 button,

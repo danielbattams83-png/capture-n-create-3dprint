@@ -25,6 +25,7 @@
 .DS_Store
 desktop.ini
 *.pem
+/_reference/
 
 # debug
 npm-debug.log*

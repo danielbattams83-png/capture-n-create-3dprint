@@ -15,6 +15,10 @@ The credential is only read by server routes and is never sent to the browser. R
 
 Open [http://localhost:3000](http://localhost:3000).
 
+## Application routes
+
+The shared two-row header is rendered by the root layout and links to `/`, `/assets`, `/create-image`, `/create-model`, and `/textures`. The current route is highlighted, while navigation clicks, browser history changes, and refreshes all reset the document to the top. The downloaded UI architecture reference lives in the ignored `_reference/` directory and is excluded from linting and TypeScript builds.
+
 ## API routes
 
 - `POST /api/generate-3d` accepts one to four `images` files in multipart form data and returns a `task_id`, signed `task_token`, and `task_type`. One image uses Image-to-3D; multiple images use Multi-Image-to-3D.

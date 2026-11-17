@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
+import Script from "next/script";
+import Header from "@/components/header";
+import ScrollToTop from "@/components/scroll-to-top";
 import "./globals.css";
 
 const inter = Inter({
@@ -22,7 +25,23 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en">
-      <body className={`${inter.variable} ${jetBrainsMono.variable}`}>{children}</body>
+      <body className={`${inter.variable} ${jetBrainsMono.variable}`}>
+        <Script id="scroll-restoration" strategy="beforeInteractive">
+          {`history.scrollRestoration = "manual";
+            const acesResetScroll = () => {
+              window.scrollTo(0, 0);
+              requestAnimationFrame(() => window.scrollTo(0, 0));
+              setTimeout(() => window.scrollTo(0, 0), 100);
+            };
+            acesResetScroll();
+            addEventListener("pageshow", acesResetScroll);
+            addEventListener("popstate", acesResetScroll);
+            addEventListener("load", acesResetScroll);`}
+        </Script>
+        <ScrollToTop />
+        <Header />
+        {children}
+      </body>
     </html>
   );
 }

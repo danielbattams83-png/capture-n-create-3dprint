@@ -781,25 +781,6 @@ export default function Home() {
   return (
     <>
     <main className="min-h-screen bg-[#f7f7f5] text-[#20211f]">
-      <header className="border-b border-[#e9e9e5] bg-white/80">
-        <div className="mx-auto flex max-w-7xl flex-col items-stretch sm:h-[192px] sm:flex-row sm:items-center sm:justify-between sm:px-8">
-          <a href="#" className="block w-full shrink-0 sm:w-auto" aria-label="A.C.E.S. 3D Print Studio home">
-            <Image
-              src="/A.C.E.S. 3D Print Studio.png"
-              alt="A.C.E.S. 3D Print Studio"
-              width={2197}
-              height={1431}
-              priority
-              className="block h-auto w-full object-contain sm:w-[232px]"
-            />
-          </a>
-          <div className="hidden items-center gap-2 text-right text-xs font-medium tracking-wide text-[#9ca3af] sm:flex">
-            <Sparkles aria-hidden="true" className="size-3.5 text-[#60a5fa]" />
-            For the space between ideas and inventions
-          </div>
-        </div>
-      </header>
-
       <div className="mx-auto max-w-7xl px-5 pb-12 pt-9 sm:px-8 sm:pt-14">
         <div className="mb-9 max-w-2xl sm:mb-11">
           <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-[#e7e9df] bg-white px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#777d6b]">
