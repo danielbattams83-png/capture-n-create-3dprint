@@ -13,6 +13,7 @@ type ImagePreprocessingModalProps = {
   open: boolean;
   phase: "processing" | "review" | "error" | null;
   images: ProcessedImageReview[];
+  sourceFiles: File[];
   completedCount: number;
   totalCount: number;
   error: string;
@@ -31,6 +32,7 @@ export default function ImagePreprocessingModal({
   open,
   phase,
   images,
+  sourceFiles,
   completedCount,
   totalCount,
   error,
@@ -39,6 +41,10 @@ export default function ImagePreprocessingModal({
   onRetry,
 }: ImagePreprocessingModalProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const filesRequiringOptimization = sourceFiles.filter(
+    (file) => file.size > 1_000_000,
+  );
+  const sourceSize = sourceFiles.reduce((total, file) => total + file.size, 0);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -100,6 +106,26 @@ export default function ImagePreprocessingModal({
         </div>
 
         <div className="max-h-[calc(100dvh-12rem)] overflow-y-auto p-5 sm:p-7">
+          {filesRequiringOptimization.length > 0 && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="mb-5 flex items-start gap-3 rounded-xl border border-amber-400/20 bg-amber-400/10 px-3.5 py-3 text-amber-100"
+            >
+              <AlertCircle
+                aria-hidden="true"
+                className="mt-0.5 size-4 shrink-0 text-amber-300"
+              />
+              <p className="text-xs leading-5">
+                <span className="font-semibold">Large file warning:</span>{" "}
+                {sourceFiles.length === 1
+                  ? `the selected file is ${formatFileSize(sourceSize)}`
+                  : `${sourceFiles.length} selected files total ${formatFileSize(sourceSize)}`}
+                . {filesRequiringOptimization.length === 1 ? "One file is" : `${filesRequiringOptimization.length} files are`} over the safe 1 MB target and will be reduced before upload.
+              </p>
+            </div>
+          )}
+
           {phase === "processing" && (
             <div className="flex min-h-72 flex-col items-center justify-center text-center">
               <span className="flex size-16 items-center justify-center rounded-2xl border border-[#2b3440] bg-[#0b0d10] text-[#60a5fa]">

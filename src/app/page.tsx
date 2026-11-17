@@ -1358,6 +1358,7 @@ export function Studio({
       open={preprocessingPhase !== null}
       phase={preprocessingPhase}
       images={processedImageReviews}
+      sourceFiles={preprocessingSourceFiles}
       completedCount={preprocessingCompletedCount}
       totalCount={preprocessingSourceFiles.length}
       error={preprocessingError}
