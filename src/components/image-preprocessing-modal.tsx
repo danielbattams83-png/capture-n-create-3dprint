@@ -21,6 +21,12 @@ type ImagePreprocessingModalProps = {
   onRetry: () => void;
 };
 
+function formatFileSize(bytes: number): string {
+  return bytes >= 1_000_000
+    ? `${(bytes / 1_000_000).toFixed(2)} MB`
+    : `${Math.max(1, Math.round(bytes / 1_000))} KB`;
+}
+
 export default function ImagePreprocessingModal({
   open,
   phase,
@@ -142,8 +148,11 @@ export default function ImagePreprocessingModal({
                         className="object-contain p-3"
                       />
                     </div>
-                    <p className="truncate border-t border-[#2b3440] px-3 py-2 font-mono text-[10px] text-[#9ca3af]">
-                      {file.name}
+                    <p className="flex items-center justify-between gap-3 border-t border-[#2b3440] px-3 py-2 font-mono text-[10px] text-[#9ca3af]">
+                      <span className="min-w-0 truncate">{file.name}</span>
+                      <span className="shrink-0 tabular-nums">
+                        {formatFileSize(file.size)}
+                      </span>
                     </p>
                   </div>
                 ))}

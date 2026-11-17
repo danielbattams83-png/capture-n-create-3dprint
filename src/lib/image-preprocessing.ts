@@ -2,6 +2,8 @@
 
 const ALPHA_THRESHOLD = 8;
 const SUBJECT_PADDING_RATIO = 0.1;
+const MAX_PROCESSED_IMAGE_BYTES = 1_000_000;
+const MIN_OUTPUT_DIMENSION = 32;
 
 function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) => {
@@ -13,6 +15,43 @@ function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
       }
     }, "image/png");
   });
+}
+
+async function encodePngWithinLimit(
+  sourceCanvas: HTMLCanvasElement,
+  maxBytes: number,
+): Promise<Blob> {
+  let canvas = sourceCanvas;
+
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    const blob = await canvasToPngBlob(canvas);
+    if (blob.size <= maxBytes) return blob;
+
+    if (
+      canvas.width <= MIN_OUTPUT_DIMENSION &&
+      canvas.height <= MIN_OUTPUT_DIMENSION
+    ) {
+      break;
+    }
+
+    const sizeRatio = Math.sqrt(maxBytes / blob.size) * 0.94;
+    const scale = Math.max(0.5, Math.min(0.85, sizeRatio));
+    const resizedCanvas = document.createElement("canvas");
+    resizedCanvas.width = Math.max(
+      MIN_OUTPUT_DIMENSION,
+      Math.floor(canvas.width * scale),
+    );
+    resizedCanvas.height = Math.max(
+      MIN_OUTPUT_DIMENSION,
+      Math.floor(canvas.height * scale),
+    );
+    const context = resizedCanvas.getContext("2d");
+    if (!context) throw new Error("Image processing is unavailable in this browser.");
+    context.drawImage(canvas, 0, 0, resizedCanvas.width, resizedCanvas.height);
+    canvas = resizedCanvas;
+  }
+
+  throw new Error("The isolated image could not be reduced to a safe upload size.");
 }
 
 async function drawBlobToCanvas(blob: Blob): Promise<HTMLCanvasElement> {
@@ -54,6 +93,7 @@ async function drawBlobToCanvas(blob: Blob): Promise<HTMLCanvasElement> {
 export async function cropTransparentImage(
   transparentImage: Blob,
   paddingRatio = SUBJECT_PADDING_RATIO,
+  maxBytes = MAX_PROCESSED_IMAGE_BYTES,
 ): Promise<Blob> {
   const sourceCanvas = await drawBlobToCanvas(transparentImage);
   const sourceContext = sourceCanvas.getContext("2d", { willReadFrequently: true });
@@ -109,7 +149,7 @@ export async function cropTransparentImage(
     cropHeight,
   );
 
-  return canvasToPngBlob(outputCanvas);
+  return encodePngWithinLimit(outputCanvas, maxBytes);
 }
 
 export async function isolateAndCropSubject(file: File): Promise<File> {
@@ -117,7 +157,11 @@ export async function isolateAndCropSubject(file: File): Promise<File> {
   const transparentImage = await removeBackground(file, {
     output: { format: "image/png", quality: 1 },
   });
-  const croppedImage = await cropTransparentImage(transparentImage);
+  const croppedImage = await cropTransparentImage(
+    transparentImage,
+    SUBJECT_PADDING_RATIO,
+    Math.min(file.size, MAX_PROCESSED_IMAGE_BYTES),
+  );
   const baseName = file.name.replace(/\.[^.]+$/, "") || "subject";
 
   return new File([croppedImage], `${baseName}-isolated.png`, {
