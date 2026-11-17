@@ -259,22 +259,33 @@ export default function CreationsCarousel({
   };
 
   return (
-    <section className="mt-10 overflow-hidden rounded-[22px] border border-[#e8e9e4] bg-white shadow-[0_8px_30px_rgba(27,31,24,0.035)]">
-      <div className="flex items-center justify-between gap-4 border-b border-[#efefec] px-5 py-4 sm:px-7">
+    <section className="overflow-hidden rounded-[22px] border border-white/[0.08] bg-[#182028] shadow-[0_12px_32px_-18px_rgba(0,0,0,0.6)]">
+      <div className="flex items-center justify-between gap-4 border-b border-white/[0.08] px-5 py-5 sm:px-7">
         <div>
-          <h2 className="text-base font-semibold text-[#343731]">Creations</h2>
-          <p className="mt-1 text-xs text-[#92958d]">
-            Models are stored on this device for seven days.
+          <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-[#60a5fa]">
+            Your Collections
+          </p>
+          <h2 className="mt-1 text-xl font-bold tracking-[-0.025em] text-white">
+            Bring a creation forward
+          </h2>
+          <p className="mt-1 text-xs text-[#94a3b8]">
+            Saved on this device for seven days.
           </p>
         </div>
-        {creations.length > 1 && (
+        <div className="flex items-center gap-3">
+          {creations.length > 0 && (
+            <span className="font-mono text-xs text-[#7d8794]" aria-live="polite">
+              {activeIndex + 1} / {creations.length}
+            </span>
+          )}
+          {creations.length > 1 && (
           <div className="flex gap-2">
             <button
               type="button"
               onClick={() => move(-1)}
               disabled={activeIndex <= 0}
               aria-label="Previous creation"
-              className="flex size-9 items-center justify-center rounded-lg border border-[#dfe2d9] text-[#59634b] transition hover:bg-[#f8faf4] disabled:opacity-35"
+              className="flex size-11 items-center justify-center rounded-full border border-white/[0.15] bg-[#11171d] text-white transition hover:bg-[#1e242b] disabled:cursor-default disabled:opacity-30"
             >
               <ChevronLeft aria-hidden="true" className="size-4" />
             </button>
@@ -283,12 +294,13 @@ export default function CreationsCarousel({
               onClick={() => move(1)}
               disabled={activeIndex >= creations.length - 1}
               aria-label="Next creation"
-              className="flex size-9 items-center justify-center rounded-lg border border-[#dfe2d9] text-[#59634b] transition hover:bg-[#f8faf4] disabled:opacity-35"
+              className="flex size-11 items-center justify-center rounded-full border border-white/[0.15] bg-[#11171d] text-white transition hover:bg-[#1e242b] disabled:cursor-default disabled:opacity-30"
             >
               <ChevronRight aria-hidden="true" className="size-4" />
             </button>
           </div>
-        )}
+          )}
+        </div>
       </div>
 
       {loading ? (
@@ -365,9 +377,36 @@ export default function CreationsCarousel({
             {creations.slice(activeIndex + 1).map(renderSideCard)}
           </div>
           {activeCreation && (
-            <p className="relative mt-1 text-center text-[10px] text-[#66717f]">
-              Select a side model to bring it forward
-            </p>
+            <>
+              <nav
+                className="relative mt-2 flex justify-center gap-1"
+                aria-label="Choose a saved creation"
+              >
+                {creations.map((creation, index) => (
+                  <button
+                    key={creation.id}
+                    type="button"
+                    onClick={() => setActiveId(creation.id)}
+                    aria-label={`Show ${creation.name}`}
+                    aria-current={index === activeIndex ? "true" : undefined}
+                    className={`flex h-7 items-center justify-center rounded-full transition-all ${
+                      index === activeIndex ? "w-8" : "w-7"
+                    }`}
+                  >
+                    <span
+                      className={`h-1.5 rounded-full transition-all ${
+                        index === activeIndex
+                          ? "w-6 bg-[#60a5fa]"
+                          : "w-1.5 bg-white/25"
+                      }`}
+                    />
+                  </button>
+                ))}
+              </nav>
+              <p className="relative mt-1 text-center text-[10px] text-[#66717f]">
+                Select a side model to bring it forward
+              </p>
+            </>
           )}
         </div>
       )}

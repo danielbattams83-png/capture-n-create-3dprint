@@ -15,6 +15,12 @@ The credential is only read by server routes and is never sent to the browser. R
 
 Open [http://localhost:3000](http://localhost:3000).
 
+## Application routes
+
+The shared two-row header is rendered by the root layout and links to `/`, `/assets`, `/create-image`, `/create-model`, and `/textures`. The current route is highlighted, while navigation clicks, browser history changes, and refreshes all reset the document to the top. The logo spans the mobile header width and returns to a compact centered lockup on larger screens.
+
+Home presents a vertical capture → generation parameters → created model workflow. The created model viewport floats and rotates gently, with direct Collection, texture, and export actions. `/assets` contains the local seven-day Collections carousel followed by the searchable free-model spotlight Bento grid; loading either a local or free model opens it directly in the `/create-model` viewport. The downloaded UI architecture reference lives in the ignored `_reference/` directory and is excluded from linting and TypeScript builds.
+
 ## API routes
 
 - `POST /api/generate-3d` accepts one to four `images` files in multipart form data and returns a `task_id`, signed `task_token`, and `task_type`. One image uses Image-to-3D; multiple images use Multi-Image-to-3D.
