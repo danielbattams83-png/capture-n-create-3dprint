@@ -4,6 +4,62 @@ import { useEffect, useRef, useState } from "react";
 
 const MINOR_TICK_PX = 10;
 const MAJOR_TICK_INTERVAL = 5;
+const MAX_CAPTURE_BYTES = 1_000_000;
+const MAX_CAPTURE_DIMENSION = 1920;
+const JPEG_QUALITIES = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.32];
+
+function encodeJpeg(canvas: HTMLCanvasElement, quality: number): Promise<Blob | null> {
+  return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+}
+
+async function compressCapture(
+  source: CanvasImageSource,
+  sourceWidth: number,
+  sourceHeight: number,
+): Promise<Blob> {
+  let scale = Math.min(
+    1,
+    MAX_CAPTURE_DIMENSION / Math.max(sourceWidth, sourceHeight),
+  );
+  let smallestBlob: Blob | null = null;
+
+  for (let resizeAttempt = 0; resizeAttempt < 7; resizeAttempt += 1) {
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(320, Math.round(sourceWidth * scale));
+    canvas.height = Math.max(320, Math.round(sourceHeight * scale));
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Could not prepare the captured photo.");
+    context.drawImage(source, 0, 0, canvas.width, canvas.height);
+
+    for (const quality of JPEG_QUALITIES) {
+      const blob = await encodeJpeg(canvas, quality);
+      if (!blob) continue;
+      if (!smallestBlob || blob.size < smallestBlob.size) smallestBlob = blob;
+      if (blob.size <= MAX_CAPTURE_BYTES) return blob;
+    }
+
+    scale *= 0.8;
+  }
+
+  if (smallestBlob && smallestBlob.size <= MAX_CAPTURE_BYTES) return smallestBlob;
+  throw new Error("The captured photo could not be reduced below 1 MB.");
+}
+
+function loadImage(file: File): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new window.Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("The camera photo could not be read."));
+    };
+    image.src = url;
+  });
+}
 
 function PrecisionScaleRulers() {
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -167,30 +223,24 @@ export default function CameraCapture({
     };
   }, []);
 
-  const takePhoto = () => {
+  const takePhoto = async () => {
     const video = videoRef.current;
     if (!video || !video.videoWidth || !video.videoHeight || capturing) return;
     setCapturing(true);
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const context = canvas.getContext("2d");
-    if (!context) {
-      setError("Could not take a photo. Try your device camera below.");
-      setCapturing(false);
-      return;
-    }
-    context.drawImage(video, 0, 0);
-    canvas.toBlob((blob) => {
+    setError("");
+    try {
+      const blob = await compressCapture(video, video.videoWidth, video.videoHeight);
       if (!dialogRef.current?.open) return;
-      if (!blob) {
-        setError("Could not save the photo. Please try again.");
-        setCapturing(false);
-        return;
-      }
       onCapture(new File([blob], `camera-${Date.now()}.jpg`, { type: "image/jpeg" }));
       onClose();
-    }, "image/jpeg", 0.92);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Could not save the photo. Please try again.",
+      );
+      setCapturing(false);
+    }
   };
 
   return (
@@ -225,7 +275,7 @@ export default function CameraCapture({
       )}
       <button
         type="button"
-        onClick={takePhoto}
+        onClick={() => void takePhoto()}
         disabled={!ready || capturing || Boolean(error)}
         className="mt-4 w-full rounded-xl bg-[#29352b] px-4 py-3 text-sm font-semibold text-white disabled:opacity-50"
       >
@@ -242,8 +292,29 @@ export default function CameraCapture({
           const file = event.target.files?.[0];
           event.target.value = "";
           if (file) {
-            onCapture(file);
-            onClose();
+            setCapturing(true);
+            setError("");
+            void loadImage(file)
+              .then((image) =>
+                compressCapture(image, image.naturalWidth, image.naturalHeight),
+              )
+              .then((blob) => {
+                if (!dialogRef.current?.open) return;
+                onCapture(
+                  new File([blob], `camera-${Date.now()}.jpg`, {
+                    type: "image/jpeg",
+                  }),
+                );
+                onClose();
+              })
+              .catch((cause: unknown) => {
+                setError(
+                  cause instanceof Error
+                    ? cause.message
+                    : "Could not save the photo. Please try again.",
+                );
+                setCapturing(false);
+              });
           }
         }}
       />
@@ -256,7 +327,7 @@ export default function CameraCapture({
       }} className="mt-2 w-full rounded-xl border border-[#dfe2d9] px-4 py-3 text-sm font-semibold">
         Use device camera instead
       </button>
-      <p className="mt-2 text-xs text-[#777b73]">On supported phones this opens the camera app; other devices may show a file picker.</p>
+      <p className="mt-2 text-xs text-[#777b73]">Camera photos are automatically resized and compressed below 1 MB so four captures fit in one upload. On supported phones this opens the camera app; other devices may show a file picker.</p>
     </dialog>
   );
 }
