@@ -80,7 +80,15 @@ const dimensionLabels: Record<PrintDimension, string> = {
   z: "Height",
 };
 
-export default function Home() {
+type StudioProps = {
+  initialAssetId?: string;
+  initialCreationId?: string;
+};
+
+export function Studio({
+  initialAssetId,
+  initialCreationId,
+}: StudioProps = {}) {
   const [cameraOpen, setCameraOpen] = useState(false);
   const [preprocessingPhase, setPreprocessingPhase] =
     useState<PreprocessingPhase>(null);
@@ -803,8 +811,8 @@ export default function Home() {
     if (routeModelLoadHandled.current) return;
     routeModelLoadHandled.current = true;
     const parameters = new URLSearchParams(window.location.search);
-    const creationId = parameters.get("creation");
-    const assetId = parameters.get("asset");
+    const creationId = initialCreationId ?? parameters.get("creation");
+    const assetId = initialAssetId ?? parameters.get("asset");
     if (!creationId && !assetId) return;
 
     const loadRequestedModel = async () => {
@@ -832,7 +840,7 @@ export default function Home() {
     };
 
     void loadRequestedModel();
-  }, [editCatalogAsset, editCreation]);
+  }, [editCatalogAsset, editCreation, initialAssetId, initialCreationId]);
 
   return (
     <>
@@ -1288,6 +1296,16 @@ export default function Home() {
                 </button>
               )}
             </div>
+          ) : previewLoading ? (
+            <div className="flex min-h-72 flex-col items-center justify-center px-6 text-center">
+              <Sparkles
+                aria-hidden="true"
+                className="size-7 animate-pulse text-[#60a5fa]"
+              />
+              <p className="mt-4 text-sm font-semibold text-white">
+                Loading selected model…
+              </p>
+            </div>
           ) : (
             <div className="flex min-h-72 flex-col items-center justify-center px-6 text-center">
               <span className="flex size-14 items-center justify-center rounded-2xl border border-[#60a5fa]/25 bg-[#17243a] text-[#60a5fa]">
@@ -1377,4 +1395,8 @@ export default function Home() {
     />
     </>
   );
+}
+
+export default function Home() {
+  return <Studio />;
 }
