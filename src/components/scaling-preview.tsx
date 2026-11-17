@@ -3,19 +3,24 @@
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { Maximize2, Ruler, Scissors, SlidersHorizontal } from "lucide-react";
+import { Lock, Maximize2, Ruler, Unlock } from "lucide-react";
 
 type ScalingPreviewProps = {
   file: File;
   previewUrl: string;
   widthMm: number;
   heightMm: number;
+  proportionsLocked: boolean;
+  onWidthChange: (width: number) => void;
   onHeightChange: (height: number) => void;
+  onProportionsLockedChange: (locked: boolean) => void;
   onAspectRatioChange: (ratio: number) => void;
 };
 
 type DragState = {
+  startX: number;
   startY: number;
+  startWidth: number;
   startHeight: number;
   pixelsPerMm: number;
 };
@@ -23,63 +28,20 @@ type DragState = {
 const BED_SIZE_MM = 250;
 const RULER_MARKS = [0, 50, 100, 150, 200, 250];
 
-function colorDistance(
-  red: number,
-  green: number,
-  blue: number,
-  color: [number, number, number],
-) {
-  return Math.hypot(red - color[0], green - color[1], blue - color[2]);
-}
-
-function sampleCorner(
-  data: Uint8ClampedArray,
-  width: number,
-  height: number,
-  x: number,
-  y: number,
-): [number, number, number] {
-  let red = 0;
-  let green = 0;
-  let blue = 0;
-  let count = 0;
-
-  for (let offsetY = 0; offsetY < 3; offsetY += 1) {
-    for (let offsetX = 0; offsetX < 3; offsetX += 1) {
-      const pixelX = Math.min(width - 1, x + offsetX);
-      const pixelY = Math.min(height - 1, y + offsetY);
-      const index = (pixelY * width + pixelX) * 4;
-      if (data[index + 3] === 0) continue;
-      red += data[index];
-      green += data[index + 1];
-      blue += data[index + 2];
-      count += 1;
-    }
-  }
-
-  return count > 0
-    ? [red / count, green / count, blue / count]
-    : [0, 0, 0];
-}
-
 export default function ScalingPreview({
   file,
   previewUrl,
   widthMm,
   heightMm,
+  proportionsLocked,
+  onWidthChange,
   onHeightChange,
+  onProportionsLockedChange,
   onAspectRatioChange,
 }: ScalingPreviewProps) {
   const gridRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const dragRef = useRef<DragState | null>(null);
   const [sourceImage, setSourceImage] = useState<HTMLImageElement | null>(null);
-  const [tolerance, setTolerance] = useState(25);
-  const [showCutout, setShowCutout] = useState(false);
-  const [subjectBounds, setSubjectBounds] = useState<{
-    widthPercent: number;
-    heightPercent: number;
-  } | null>(null);
   const [imageError, setImageError] = useState("");
 
   useEffect(() => {
@@ -101,116 +63,6 @@ export default function ScalingPreview({
     };
   }, [file, onAspectRatioChange, previewUrl]);
 
-  useEffect(() => {
-    const output = canvasRef.current;
-    if (!output || !showCutout || !sourceImage) {
-      return;
-    }
-
-    const frame = window.requestAnimationFrame(() => {
-      const maxBufferSize = 360;
-      const scale = Math.min(
-        1,
-        maxBufferSize / Math.max(sourceImage.naturalWidth, sourceImage.naturalHeight),
-      );
-      const width = Math.max(1, Math.round(sourceImage.naturalWidth * scale));
-      const height = Math.max(1, Math.round(sourceImage.naturalHeight * scale));
-      const buffer = document.createElement("canvas");
-      buffer.width = width;
-      buffer.height = height;
-      const bufferContext = buffer.getContext("2d", { willReadFrequently: true });
-      const outputContext = output.getContext("2d");
-      if (!bufferContext || !outputContext) {
-        setImageError("The cutout preview is unavailable in this browser.");
-        return;
-      }
-
-      bufferContext.drawImage(sourceImage, 0, 0, width, height);
-      const imageData = bufferContext.getImageData(0, 0, width, height);
-      const pixels = imageData.data;
-      const cornerColors = [
-        sampleCorner(pixels, width, height, 0, 0),
-        sampleCorner(pixels, width, height, width - 3, 0),
-        sampleCorner(pixels, width, height, 0, height - 3),
-        sampleCorner(pixels, width, height, width - 3, height - 3),
-      ];
-      const threshold = (tolerance / 100) * Math.sqrt(3 * 255 * 255);
-      const pixelCount = width * height;
-      const queue = new Int32Array(pixelCount);
-      let queueStart = 0;
-      let queueEnd = 0;
-
-      const enqueueIfBackground = (pixel: number) => {
-        const index = pixel * 4;
-        if (pixels[index + 3] === 0) return;
-        const matchesCorner = cornerColors.some(
-          (color) =>
-            colorDistance(pixels[index], pixels[index + 1], pixels[index + 2], color) <=
-            threshold,
-        );
-        if (!matchesCorner) return;
-        pixels[index + 3] = 0;
-        queue[queueEnd] = pixel;
-        queueEnd += 1;
-      };
-
-      for (let x = 0; x < width; x += 1) {
-        enqueueIfBackground(x);
-        enqueueIfBackground((height - 1) * width + x);
-      }
-      for (let y = 1; y < height - 1; y += 1) {
-        enqueueIfBackground(y * width);
-        enqueueIfBackground(y * width + width - 1);
-      }
-
-      while (queueStart < queueEnd) {
-        const pixel = queue[queueStart];
-        queueStart += 1;
-        const x = pixel % width;
-        if (x > 0) enqueueIfBackground(pixel - 1);
-        if (x + 1 < width) enqueueIfBackground(pixel + 1);
-        if (pixel >= width) enqueueIfBackground(pixel - width);
-        if (pixel + width < pixelCount) enqueueIfBackground(pixel + width);
-      }
-
-      let minX = width;
-      let minY = height;
-      let maxX = -1;
-      let maxY = -1;
-      for (let pixel = 0; pixel < pixelCount; pixel += 1) {
-        const index = pixel * 4;
-        if (pixels[index + 3] === 0) continue;
-        const x = pixel % width;
-        const y = Math.floor(pixel / width);
-        minX = Math.min(minX, x);
-        minY = Math.min(minY, y);
-        maxX = Math.max(maxX, x);
-        maxY = Math.max(maxY, y);
-        pixels[index] = 59;
-        pixels[index + 1] = 130;
-        pixels[index + 2] = 246;
-        pixels[index + 3] = Math.round(pixels[index + 3] * 0.78);
-      }
-
-      bufferContext.putImageData(imageData, 0, 0);
-      output.width = width;
-      output.height = height;
-      outputContext.clearRect(0, 0, width, height);
-      outputContext.drawImage(buffer, 0, 0);
-      setSubjectBounds(
-        maxY >= minY && maxX >= minX
-          ? {
-              widthPercent: ((maxX - minX + 1) / width) * 100,
-              heightPercent: ((maxY - minY + 1) / height) * 100,
-            }
-          : null,
-      );
-      setImageError("");
-    });
-
-    return () => window.cancelAnimationFrame(frame);
-  }, [showCutout, sourceImage, tolerance]);
-
   const handleResizePointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
     const grid = gridRef.current;
     if (!grid) return;
@@ -218,7 +70,9 @@ export default function ScalingPreview({
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
     dragRef.current = {
+      startX: event.clientX,
       startY: event.clientY,
+      startWidth: widthMm,
       startHeight: heightMm,
       pixelsPerMm: grid.clientWidth / BED_SIZE_MM,
     };
@@ -227,22 +81,30 @@ export default function ScalingPreview({
   const handleResizePointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
     const drag = dragRef.current;
     if (!drag) return;
+    const nextWidth = drag.startWidth + (event.clientX - drag.startX) / drag.pixelsPerMm;
     const nextHeight = drag.startHeight - (event.clientY - drag.startY) / drag.pixelsPerMm;
-    onHeightChange(Math.min(maxTargetHeight, Math.max(1, Math.round(nextHeight))));
+
+    if (proportionsLocked) {
+      const widthScaleChange = Math.abs(nextWidth / drag.startWidth - 1);
+      const heightScaleChange = Math.abs(nextHeight / drag.startHeight - 1);
+      if (widthScaleChange >= heightScaleChange) {
+        onWidthChange(nextWidth);
+      } else {
+        onHeightChange(nextHeight);
+      }
+      return;
+    }
+
+    onWidthChange(Math.min(BED_SIZE_MM, Math.max(1, Math.round(nextWidth))));
+    onHeightChange(Math.min(BED_SIZE_MM, Math.max(1, Math.round(nextHeight))));
   };
 
   const stopResize = () => {
     dragRef.current = null;
   };
 
-  const aspectRatio = sourceImage
-    ? sourceImage.naturalWidth / sourceImage.naturalHeight
-    : widthMm / heightMm;
-  const maxTargetHeight = Math.max(
-    1,
-    Math.min(BED_SIZE_MM, Math.floor(BED_SIZE_MM / aspectRatio)),
-  );
   const imageWidthPercent = (widthMm / BED_SIZE_MM) * 100;
+  const imageHeightPercent = (heightMm / BED_SIZE_MM) * 100;
 
   return (
     <section className="studio-panel mt-5 overflow-hidden rounded-2xl border border-[#232832] bg-[#14171d]">
@@ -266,64 +128,6 @@ export default function ScalingPreview({
       </div>
 
       <div className="p-4 sm:p-5">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div
-            className="grid w-full grid-cols-2 rounded-xl border border-white/10 bg-[#0b0d10] p-1 sm:inline-flex sm:w-auto"
-            role="group"
-            aria-label="Preview mode"
-          >
-            <button
-              type="button"
-              onClick={() => setShowCutout(false)}
-              aria-pressed={!showCutout}
-              className={`min-w-0 rounded-lg px-2 py-2 text-[11px] font-medium transition active:scale-[0.97] sm:px-3 sm:text-xs ${
-                showCutout
-                  ? "text-[#9ca3af] hover:bg-[#14171d]"
-                  : "bg-[#232832] text-[#f3f4f6]"
-              }`}
-            >
-              Original Photo
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowCutout(true)}
-              aria-pressed={showCutout}
-              className={`flex min-w-0 items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-[11px] font-medium transition active:scale-[0.97] sm:px-3 sm:text-xs ${
-                showCutout
-                  ? "bg-[#17243a] text-[#60a5fa]"
-                  : "text-[#9ca3af] hover:bg-[#14171d]"
-              }`}
-            >
-              <Scissors aria-hidden="true" className="size-3.5" />
-              Cutout Silhouette
-            </button>
-          </div>
-
-          {showCutout && (
-            <label className="flex min-w-[210px] flex-1 items-center gap-3 sm:max-w-[300px]">
-              <SlidersHorizontal
-                aria-hidden="true"
-                className="size-4 shrink-0 text-[#9ca3af]"
-              />
-              <span className="whitespace-nowrap text-[11px] text-[#9ca3af]">
-                Cutout tolerance
-              </span>
-              <input
-                aria-label="Cutout tolerance"
-                type="range"
-                min="0"
-                max="100"
-                value={tolerance}
-                onChange={(event) => setTolerance(Number(event.target.value))}
-                className="studio-range min-w-0 flex-1"
-              />
-              <span className="w-10 text-right font-mono text-xs tabular-nums text-[#60a5fa]">
-                {tolerance}%
-              </span>
-            </label>
-          )}
-        </div>
-
         <div className="mx-auto max-w-[660px]">
           <div className="mb-1 ml-10 flex h-6 items-end justify-between border-b border-[#2a323d] pl-1">
             {RULER_MARKS.map((mark) => (
@@ -363,13 +167,12 @@ export default function ScalingPreview({
                 backgroundSize: "4% 4%, 4% 4%, 20% 20%, 20% 20%",
               }}
             >
-              <div className="pointer-events-none absolute inset-x-0 bottom-[8%] z-10 flex justify-center">
+              <div className="pointer-events-none absolute inset-0 z-10">
                 <div
-                  className="relative max-w-none"
+                  className="absolute bottom-0 left-1/2 max-w-none -translate-x-1/2"
                   style={{
                     width: `${imageWidthPercent}%`,
-                    aspectRatio: `${aspectRatio}`,
-                    maxHeight: "92%",
+                    height: `${imageHeightPercent}%`,
                   }}
                 >
                   <div className="pointer-events-none absolute -top-7 left-1/2 z-20 -translate-x-1/2 whitespace-nowrap rounded border border-[#3b82f6]/40 bg-[#0b0d10]/90 px-2 py-1 font-mono text-[10px] text-[#93c5fd]">
@@ -382,28 +185,15 @@ export default function ScalingPreview({
                     fill
                     unoptimized
                     sizes="(max-width: 640px) 65vw, 35vw"
-                    className={`object-fill transition-opacity ${
-                      showCutout ? "opacity-0" : "opacity-100"
-                    }`}
+                    className="object-fill"
                   />
-                  <canvas
-                    ref={canvasRef}
-                    aria-label="Color-keyed cutout silhouette preview"
-                    role="img"
-                    className={`absolute inset-0 size-full transition-opacity drop-shadow-[0_0_8px_rgba(59,130,246,0.7)] ${
-                      showCutout ? "opacity-100" : "opacity-0"
-                    }`}
-                  />
-                  {showCutout && subjectBounds && (
-                    <span className="pointer-events-none absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded border border-[#3b82f6]/40 bg-[#0b0d10]/85 px-2 py-1 font-mono text-[9px] text-[#93c5fd]">
-                      SUBJECT ≈{" "}
-                      {((widthMm * subjectBounds.widthPercent) / 100).toFixed(1)} ×{" "}
-                      {((heightMm * subjectBounds.heightPercent) / 100).toFixed(1)} MM
-                    </span>
-                  )}
                   <button
                     type="button"
-                    aria-label="Drag to resize the model while preserving its aspect ratio"
+                    aria-label={
+                      proportionsLocked
+                        ? "Drag to resize the model while preserving its proportions"
+                        : "Drag to resize the model width and height independently"
+                    }
                     onPointerDown={handleResizePointerDown}
                     onPointerMove={handleResizePointerMove}
                     onPointerUp={stopResize}
@@ -429,8 +219,40 @@ export default function ScalingPreview({
           </div>
         </div>
 
-        <div className="mt-4 flex flex-col gap-3 border-t border-[#232832] pt-4 sm:flex-row sm:items-center sm:justify-between">
-            <label className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:flex-nowrap sm:gap-3">
+        <div className="mt-4 grid gap-3 border-t border-[#232832] pt-4 sm:grid-cols-2">
+          <label className="flex min-w-0 flex-wrap items-center gap-2 sm:flex-nowrap sm:gap-3">
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-[#232832] bg-[#0b0d10] text-[#60a5fa]">
+              <Ruler aria-hidden="true" className="size-4" />
+            </span>
+            <span className="w-20 shrink-0 text-xs text-[#9ca3af] sm:w-24">Target width</span>
+            <input
+              aria-label="Target width in millimeters"
+              type="range"
+              min="1"
+              max={BED_SIZE_MM}
+              step="1"
+              value={Math.min(BED_SIZE_MM, Math.max(1, widthMm))}
+              onChange={(event) => onWidthChange(Number(event.target.value))}
+              className="studio-range min-w-0 flex-1"
+            />
+            <span className="flex items-center gap-1 font-mono text-xs tabular-nums text-[#f3f4f6]">
+              <input
+                aria-label="Target width in millimeters"
+                type="number"
+                min="1"
+                max={BED_SIZE_MM}
+                step="1"
+                value={widthMm}
+                onChange={(event) => {
+                  const value = Number(event.target.value);
+                  if (Number.isFinite(value) && value > 0) onWidthChange(value);
+                }}
+                className="w-14 bg-transparent text-right font-mono text-xs tabular-nums text-[#f3f4f6] outline-none"
+              />
+              mm
+            </span>
+          </label>
+          <label className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:flex-nowrap sm:gap-3">
             <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-[#232832] bg-[#0b0d10] text-[#60a5fa]">
               <Ruler aria-hidden="true" className="size-4" />
             </span>
@@ -439,7 +261,7 @@ export default function ScalingPreview({
               aria-label="Target height in millimeters"
               type="range"
               min="1"
-              max={maxTargetHeight}
+              max={BED_SIZE_MM}
               step="1"
               value={Math.min(BED_SIZE_MM, Math.max(1, heightMm))}
               onChange={(event) => onHeightChange(Number(event.target.value))}
@@ -450,7 +272,7 @@ export default function ScalingPreview({
                 aria-label="Target height in millimeters"
                 type="number"
                 min="1"
-                max={maxTargetHeight}
+                max={BED_SIZE_MM}
                 step="1"
                 value={heightMm}
                 onChange={(event) => {
@@ -462,17 +284,29 @@ export default function ScalingPreview({
               mm
             </span>
           </label>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center justify-end gap-3">
+          <button
+            type="button"
+            aria-pressed={proportionsLocked}
+            onClick={() => onProportionsLockedChange(!proportionsLocked)}
+            className={`inline-flex h-9 items-center gap-2 rounded-xl border px-3.5 text-xs font-medium transition active:scale-[0.97] sm:h-10 ${
+              proportionsLocked
+                ? "border-[#3b82f6]/50 bg-[#17243a] text-[#93c5fd]"
+                : "border-[#2a323d] bg-[#0b0d10] text-[#9ca3af] hover:border-[#3b82f6]/50 hover:text-[#f3f4f6]"
+            }`}
+          >
+            {proportionsLocked ? (
+              <Lock aria-hidden="true" className="size-3.5" />
+            ) : (
+              <Unlock aria-hidden="true" className="size-3.5" />
+            )}
+            Lock proportions
+          </button>
           <p className="font-mono text-[10px] text-[#7d8794]">
-            Aspect locked · 250 mm bed reference
+            {proportionsLocked ? "Proportions locked" : "Width and height scale independently"} · 250 mm bed reference
           </p>
         </div>
-
-        {showCutout && (
-          <p className="mt-3 flex items-center gap-2 text-[10px] leading-5 text-[#7d8794]">
-            <SlidersHorizontal aria-hidden="true" className="size-3.5 shrink-0" />
-            Cutout is a local visual guide only. The original image file is sent unchanged for generation.
-          </p>
-        )}
       </div>
     </section>
   );
