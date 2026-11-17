@@ -4,12 +4,15 @@ import Image from "next/image";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useDropzone } from "react-dropzone";
+import { Box, Check, LockKeyhole, Plus, Sparkles, UploadCloud, X } from "lucide-react";
 import type { ModelExportAction } from "@/components/model-viewer";
+import AppNavigation from "@/components/app-navigation";
+import ScalingPreview from "@/components/scaling-preview";
 
 const ModelViewer = dynamic(() => import("@/components/model-viewer"), {
   ssr: false,
   loading: () => (
-    <div className="flex h-[360px] items-center justify-center rounded-2xl bg-[#f7f8f4] text-xs font-medium text-[#7b8173] sm:h-[420px]">
+    <div className="flex h-[360px] items-center justify-center rounded-2xl bg-[#0B0D12] font-mono text-xs font-medium text-slate-400 sm:h-[420px]">
       Preparing 3D preview…
     </div>
   ),
@@ -61,33 +64,6 @@ const dimensionLabels: Record<PrintDimension, string> = {
   z: "Height",
 };
 
-function PhotoIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" className="size-6">
-      <rect x="3" y="4" width="18" height="16" rx="3" stroke="currentColor" strokeWidth="1.6" />
-      <circle cx="8.5" cy="9" r="1.5" fill="currentColor" />
-      <path d="m5 17 4.5-4 3 2.5 2.5-2 4 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function CubeIcon({ className = "size-5" }: { className?: string }) {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" className={className}>
-      <path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-      <path d="m4.5 7.7 7.5 4.4 7.5-4.4M12 12.1V21" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function CheckIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20" fill="none" className="size-3.5">
-      <path d="m4 10 4 4 8-8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
 export default function Home() {
   const [images, setImages] = useState<SelectedImage[]>([]);
   const [status, setStatus] = useState<GenerationStatus>("idle");
@@ -99,13 +75,14 @@ export default function Home() {
   const [previewError, setPreviewError] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [exportModel, setExportModel] = useState<ModelExportAction | null>(null);
+  const [aspectRatio, setAspectRatio] = useState<number | null>(null);
   const activeRequest = useRef<AbortController | null>(null);
   const previewUrls = useRef<string[]>([]);
   const previewTask = useRef<PreviewTask | null>(null);
   const [dimensions, setDimensions] = useState<Record<PrintDimension, string>>({
     x: "100",
-    y: "100",
-    z: "3",
+    y: "3",
+    z: "100",
   });
 
   useEffect(() => {
@@ -120,6 +97,39 @@ export default function Home() {
   const registerExportModel = useCallback((action: ModelExportAction | null) => {
     setExportModel(() => action);
   }, []);
+
+  const handleAspectRatioChange = useCallback((ratio: number) => {
+    if (!Number.isFinite(ratio) || ratio <= 0) return;
+    setAspectRatio(ratio);
+    setDimensions((current) => {
+      const maxHeight = Math.max(1, Math.min(250, Math.floor(250 / ratio)));
+      const height = Math.min(maxHeight, Number(current.z) || 100);
+      return {
+        ...current,
+        x: String(Math.round(height * ratio)),
+        z: String(height),
+      };
+    });
+  }, []);
+
+  const handlePreviewHeightChange = useCallback(
+    (height: number) => {
+      const maxHeight = aspectRatio
+        ? Math.max(1, Math.min(250, Math.floor(250 / aspectRatio)))
+        : 250;
+      const boundedHeight = Math.min(maxHeight, Math.max(1, height));
+      setDimensions((current) => ({
+        ...current,
+        x: String(
+          aspectRatio
+            ? Math.round(boundedHeight * aspectRatio)
+            : Number(current.x) || 100,
+        ),
+        z: String(boundedHeight),
+      }));
+    },
+    [aspectRatio],
+  );
 
   const loadModelPreview = async (task: PreviewTask, signal: AbortSignal) => {
     setPreviewLoading(true);
@@ -144,7 +154,7 @@ export default function Home() {
 
       const modelBlob = await response.blob();
       if (modelBlob.size === 0) {
-        throw new Error("Meshy returned an empty model file.");
+        throw new Error("The generation service returned an empty model file.");
       }
       if (!signal.aborted) {
         setPreviewModelUrl(URL.createObjectURL(modelBlob));
@@ -243,7 +253,7 @@ export default function Home() {
         }
 
         if (pollResult.status === "FAILED" || pollResult.status === "CANCELED") {
-          throw new Error(getApiError(pollResult) ?? "Meshy could not generate this model.");
+          throw new Error(getApiError(pollResult) ?? "The generation service could not create this model.");
         }
 
         if (
@@ -292,7 +302,7 @@ export default function Home() {
     }
     if (acceptedFiles.length === 0) return;
     if (images.length + acceptedFiles.length > 4) {
-      setError("Meshy supports up to four photos of the same object.");
+      setError("Up to four photos of the same object can be selected.");
       return;
     }
 
@@ -332,6 +342,7 @@ export default function Home() {
       previewUrls.current = previewUrls.current.filter((url) => url !== removed.previewUrl);
     }
     setImages((current) => current.filter((_, index) => index !== indexToRemove));
+    if (indexToRemove === 0) setAspectRatio(null);
     activeRequest.current?.abort();
     activeRequest.current = null;
     setStatus("idle");
@@ -347,6 +358,33 @@ export default function Home() {
   };
 
   const updateDimension = (dimension: PrintDimension, value: string) => {
+    if (aspectRatio && dimension === "x" && value !== "") {
+      const width = Number(value);
+      if (Number.isFinite(width) && width > 0) {
+        const maxHeight = Math.max(1, Math.min(250, Math.floor(250 / aspectRatio)));
+        const height = Math.max(1, Math.min(maxHeight, width / aspectRatio));
+        setDimensions((current) => ({
+          ...current,
+          x: String(Math.round(height * aspectRatio)),
+          z: String(height),
+        }));
+        return;
+      }
+    }
+
+    if (aspectRatio && dimension === "z" && value !== "") {
+      const maxHeight = Math.max(1, Math.min(250, Math.floor(250 / aspectRatio)));
+      const height = Math.max(1, Math.min(maxHeight, Number(value)));
+      if (Number.isFinite(height) && height > 0) {
+        setDimensions((current) => ({
+          ...current,
+          x: String(Math.round(height * aspectRatio)),
+          z: String(height),
+        }));
+        return;
+      }
+    }
+
     setDimensions((current) => ({ ...current, [dimension]: value }));
   };
 
@@ -361,6 +399,7 @@ export default function Home() {
     previewUrls.current.forEach((url) => URL.revokeObjectURL(url));
     previewUrls.current = [];
     setImages([]);
+    setAspectRatio(null);
     setStatus("idle");
     setError("");
     setExportError("");
@@ -374,62 +413,70 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-[#f7f7f5] text-[#20211f]">
-      <header className="border-b border-[#e9e9e5] bg-white/80">
-        <div className="mx-auto flex h-24 max-w-7xl items-center justify-between px-5 sm:h-[192px] sm:px-8">
-          <a href="#" className="flex shrink-0 items-center" aria-label="Capture & Create - 3D Print Studio home">
+    <main id="top" className="min-h-screen overflow-x-hidden bg-[#0B0D12] text-slate-100">
+      <header className="relative border-b border-white/[0.06] bg-[#0B0D12]">
+        <div className="relative mx-auto flex max-w-7xl flex-col items-center px-4 pb-4 sm:px-8 md:pb-5">
+          <a
+            href="#top"
+            className="relative block h-36 w-full max-w-2xl shrink-0 overflow-hidden sm:h-40 md:h-44"
+            aria-label="A.C.E.S. 3D Print Studio home"
+          >
             <Image
-              src="/capture-create-3d-print-studio.png"
-              alt="Capture & Create 3D Print Studio"
-              width={965}
-              height={706}
+              src="/A.C.E.S. 3D Print Studio.png"
+              alt="A.C.E.S. 3D Print Studio"
+              width={2197}
+              height={1431}
               priority
-              className="h-auto w-28 object-contain sm:w-[232px]"
+              className="size-full object-cover object-center"
             />
+            <span className="pointer-events-none absolute inset-x-0 bottom-0 h-14 bg-gradient-to-b from-transparent to-[#0B0D12]" />
           </a>
-          <div className="hidden items-center gap-2 text-xs font-medium text-[#787c74] sm:flex">
-            <span className="size-1.5 rounded-full bg-[#a5c848]" />
-            Your ideas, made tangible
+          <div className="-mt-1 mb-4 hidden items-center gap-2 text-xs font-medium tracking-wide text-slate-400 md:flex">
+            <Sparkles aria-hidden="true" className="size-3.5 text-blue-400" strokeWidth={1.5} />
+            For the space between ideas and inventions.
           </div>
-          <button type="button" className="rounded-full border border-[#e8e9e3] px-4 py-2 text-xs font-semibold text-[#4c5049] transition hover:border-[#c8cbc2] hover:bg-[#fafaf8]">
-            How it works
-          </button>
+          <AppNavigation />
         </div>
       </header>
 
-      <div className="mx-auto max-w-7xl px-5 pb-12 pt-9 sm:px-8 sm:pt-14">
-        <div className="mb-9 max-w-2xl sm:mb-11">
-          <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-[#e7e9df] bg-white px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#777d6b]">
-            <span className="size-1.5 rounded-full bg-[#9cbf3f]" />
+      <div className="mx-auto max-w-7xl px-4 pb-28 pt-7 sm:px-6 sm:pt-10 md:px-8 md:pb-12 md:pt-12">
+        <div className="mb-7 max-w-2xl sm:mb-9">
+          <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-blue-400/20 bg-blue-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-300">
+            <span className="size-1.5 rounded-full bg-blue-400 shadow-[0_0_8px_rgba(96,165,250,0.8)]" />
             Capture &amp; Create
           </div>
-          <h1 className="text-[clamp(2.2rem,5vw,3.8rem)] font-semibold leading-[1.05] tracking-[-0.065em]">
-            A photo, made <span className="text-[#8eaa43]">three-dimensional.</span>
+          <h1 className="max-w-[18ch] text-[clamp(1.75rem,6vw,2.75rem)] font-bold leading-[1.12] tracking-tight [hyphens:none]">
+            A photo, made <span className="text-blue-400">three-dimensional.</span>
           </h1>
-          <p className="mt-4 max-w-xl text-[15px] leading-7 text-[#777a73] sm:text-base">
+          <p className="mt-3 max-w-[36ch] text-sm leading-relaxed text-slate-400 sm:text-base">
             Turn a favorite image into a print-ready relief. Add a photo, set your size, and we&apos;ll shape it for you.
           </p>
         </div>
 
         <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1.65fr)_minmax(320px,0.85fr)]">
-          <section className="overflow-hidden rounded-[22px] border border-[#e8e9e4] bg-white shadow-[0_8px_30px_rgba(27,31,24,0.035)]">
-            <div className="flex items-center justify-between border-b border-[#efefec] px-5 py-4 sm:px-7">
-              <div>
-                <h2 className="text-sm font-semibold">{status === "ready" && modelUrls?.glb ? "3D model preview" : "Your photos"}</h2>
-                <p className="mt-1 text-xs text-[#969991]">
+          <section
+            id="capture"
+            className="scroll-mt-28 overflow-hidden rounded-2xl border border-white/[0.08] bg-[#12151E] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.06)]"
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-white/[0.08] p-4 sm:p-6">
+              <div className="min-w-0">
+                <span className="inline-flex rounded-full border border-blue-400/20 bg-blue-500/15 px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-blue-300 tabular-nums">
+                  01 · Capture &amp; Prep
+                </span>
+                <h2 className="mt-3 text-base font-semibold tracking-tight text-white sm:text-lg">{status === "ready" && modelUrls?.glb ? "3D model preview" : "Your photos"}</h2>
+                <p className="mt-1 text-xs leading-normal text-slate-400 sm:text-sm">
                   {status === "ready" && modelUrls?.glb
                     ? "Inspect your model before printing"
                     : "Upload up to four views of the same object"}
                 </p>
               </div>
-              <span className="rounded-full bg-[#f3f5ed] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-[#7b8e4a]">Step 01</span>
             </div>
 
-            <div className="p-4 sm:p-6">
+            <div id="assets" className="scroll-mt-28 p-4 sm:p-6">
               <div
                 {...getRootProps({
-                  className: `relative flex min-h-[300px] cursor-pointer flex-col items-center justify-center overflow-hidden rounded-2xl border border-dashed transition sm:min-h-[368px] ${
-                    isDragActive ? "border-[#91ad42] bg-[#f3f7e9]" : "border-[#dfe2d9] bg-[#fafbf8] hover:border-[#aab987] hover:bg-[#f8faf4]"
+                  className: `relative flex min-h-[260px] cursor-pointer flex-col items-center justify-center overflow-hidden rounded-2xl border border-dashed transition sm:min-h-[368px] ${
+                    isDragActive ? "border-blue-400 bg-blue-500/10" : "border-white/10 bg-[#0B0D12] hover:border-blue-400/60 hover:bg-white/[0.025]"
                   }`,
                 })}
               >
@@ -449,11 +496,11 @@ export default function Home() {
                     className="flex min-h-[340px] w-full flex-col items-center justify-center px-6 text-center sm:min-h-[420px]"
                     role="status"
                   >
-                    <CubeIcon className="size-8 text-[#91a66a]" />
-                    <p className="mt-4 text-sm font-semibold text-[#505747]">
+                    <Box aria-hidden="true" className="size-8 text-blue-400" />
+                    <p className="mt-4 text-sm font-semibold text-white">
                       {previewLoading ? "Loading your 3D preview…" : "Preview unavailable"}
                     </p>
-                    <p className="mt-2 max-w-sm text-xs leading-5 text-[#898d84]">
+                    <p className="mt-2 max-w-sm text-xs leading-5 text-slate-400">
                       {previewError ||
                         "The model is ready. You can still download it while the preview loads."}
                     </p>
@@ -461,7 +508,7 @@ export default function Home() {
                       <button
                         type="button"
                         onClick={() => void retryModelPreview()}
-                        className="mt-4 rounded-lg border border-[#dfe2d9] bg-white px-3 py-2 text-xs font-semibold text-[#536b2d] shadow-sm transition hover:bg-[#f3f5ed]"
+                        className="button-secondary mt-4"
                       >
                         Retry preview
                       </button>
@@ -470,7 +517,7 @@ export default function Home() {
                 ) : images.length > 0 ? (
                   <div className="grid w-full grid-cols-2 gap-3 p-4 sm:grid-cols-4 sm:p-5">
                     {images.map(({ file, previewUrl }, index) => (
-                      <div key={`${file.name}-${file.lastModified}-${index}`} className="group relative aspect-square overflow-hidden rounded-xl border border-[#e6e9df] bg-white">
+                      <div key={`${file.name}-${file.lastModified}-${index}`} className="group relative aspect-square overflow-hidden rounded-xl border border-white/10 bg-[#0F121A]">
                         <Image
                           src={previewUrl}
                           alt={`View ${index + 1}: ${file.name}`}
@@ -479,7 +526,7 @@ export default function Home() {
                           className="object-cover"
                           sizes="(max-width: 640px) 45vw, 20vw"
                         />
-                        <span className="absolute bottom-2 left-2 rounded-md bg-black/55 px-2 py-1 text-[10px] font-medium text-white">
+                        <span className="absolute bottom-2 left-2 rounded-md bg-black/55 px-2 py-1 font-mono text-[10px] font-medium text-white">
                           View {index + 1}
                         </span>
                         <button
@@ -489,9 +536,9 @@ export default function Home() {
                             event.stopPropagation();
                             removeImage(index);
                           }}
-                          className="absolute right-2 top-2 flex size-7 items-center justify-center rounded-full bg-white/95 text-sm font-semibold text-[#50544d] opacity-100 shadow-sm transition hover:bg-white sm:opacity-0 sm:group-hover:opacity-100"
+                          className="absolute right-2 top-2 flex size-7 items-center justify-center rounded-full border border-white/10 bg-[#14171d]/95 text-sm font-semibold text-white opacity-100 shadow-sm transition hover:bg-[#232832] active:scale-[0.97] sm:opacity-0 sm:group-hover:opacity-100"
                         >
-                          ×
+                          <X aria-hidden="true" className="size-4" />
                         </button>
                       </div>
                     ))}
@@ -502,37 +549,48 @@ export default function Home() {
                           event.stopPropagation();
                           open();
                         }}
-                        className="flex aspect-square flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[#dfe2d9] bg-white/70 text-xs font-medium text-[#78816a] transition hover:border-[#aab987] hover:bg-white"
+                        className="flex aspect-square flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-white/10 bg-white/[0.03] text-xs font-medium text-slate-400 transition hover:border-blue-400/50 hover:bg-white/[0.06] active:scale-[0.97]"
                       >
-                        <span className="text-xl leading-none">+</span>
+                        <Plus aria-hidden="true" className="size-4" />
                         Add view
                       </button>
                     )}
                   </div>
                 ) : (
                   <div className="flex flex-col items-center px-6 text-center">
-                    <span className="mb-5 flex size-14 items-center justify-center rounded-2xl border border-[#e9ebe3] bg-white text-[#839a4c] shadow-sm">
-                      <PhotoIcon />
+                    <span className="mb-4 flex size-12 items-center justify-center rounded-2xl border border-blue-400/20 bg-blue-500/10 text-blue-400 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
+                      <UploadCloud aria-hidden="true" className="size-5" />
                     </span>
-                    <p className="text-[15px] font-semibold text-[#343731]">
+                    <p className="text-sm font-semibold tracking-tight text-white sm:text-base">
                       {isDragActive ? "Drop it here to get started" : "Drop your photo here"}
                     </p>
-                    <p className="mt-2 text-sm text-[#8b8e86]">or choose up to four photos from different angles</p>
-                    <span className="mt-5 rounded-full border border-[#e9eae5] bg-white px-3 py-1.5 text-[11px] font-medium text-[#777b73]">JPG, PNG, WEBP <span className="mx-1 text-[#d0d2cb]">·</span> 20 MB each <span className="mx-1 text-[#d0d2cb]">·</span> up to 4 images</span>
+                    <p className="mt-2 max-w-[30ch] text-xs leading-normal text-slate-400 sm:text-sm">or choose up to four photos from different angles</p>
+                    <span className="mt-4 max-w-full rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-center text-[10px] font-medium leading-4 text-slate-400 sm:text-[11px]">JPG, PNG, WEBP <span className="mx-1 text-slate-600">·</span> 20 MB each <span className="mx-1 text-slate-600">·</span> up to 4 images</span>
                   </div>
                 )}
               </div>
 
-              {error && <p role="alert" className="mt-3 text-xs font-medium text-[#b34e3a]">{error}</p>}
+              {images[0] && (
+                <ScalingPreview
+                  file={images[0].file}
+                  previewUrl={images[0].previewUrl}
+                  widthMm={Math.round(getDimensionValue("z") * (aspectRatio ?? 1))}
+                  heightMm={getDimensionValue("z")}
+                  onHeightChange={handlePreviewHeightChange}
+                  onAspectRatioChange={handleAspectRatioChange}
+                />
+              )}
+
+              {error && <p role="alert" className="mt-3 text-xs font-medium text-rose-300">{error}</p>}
 
               {images.length > 0 && (
                 <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                  <p className="text-xs text-[#858980]">{images.length} of 4 photos selected</p>
+                  <p className="text-xs text-slate-400 tabular-nums">{images.length} of 4 photos selected</p>
                   <button
                     type="button"
                     onClick={() => open()}
                     disabled={images.length >= 4 || status === "uploading" || status === "generating"}
-                    className="rounded-lg border border-[#e8e9e3] bg-white px-3 py-2 text-xs font-semibold text-[#59634b] transition hover:bg-[#f8faf4] disabled:cursor-not-allowed disabled:opacity-50"
+                    className="button-secondary"
                   >
                     Add photos
                   </button>
@@ -540,18 +598,18 @@ export default function Home() {
               )}
 
               {images.length > 0 && status !== "idle" && (
-                <div className="mt-5 rounded-xl bg-[#f8f9f5] px-4 py-4 sm:px-5">
+                <div className="mt-5 rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-4 sm:px-5">
                   <div className="mb-4 flex items-center justify-between">
                     <div>
-                      <p className="text-xs font-semibold text-[#3d4139]">Model progress</p>
-                      <p className="mt-1 text-[11px] text-[#90948a]" role="status" aria-live="polite">
+                      <p className="text-xs font-semibold text-white">Model progress</p>
+                      <p className="mt-1 text-[11px] text-slate-400 tabular-nums" role="status" aria-live="polite">
                         {status === "uploading" && "Uploading your image…"}
                         {status === "generating" && `Generating your model… ${progress}%`}
                         {status === "ready" && "Your model is ready to print"}
                         {status === "error" && "Generation stopped"}
                       </p>
                     </div>
-                    <button type="button" onClick={handleRemoveImage} className="rounded-md px-2 py-1 text-[11px] font-medium text-[#84877f] transition hover:bg-white hover:text-[#343731]">
+                    <button type="button" onClick={handleRemoveImage} className="rounded-lg px-2 py-1 text-[11px] font-medium text-slate-400 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.97]">
                       Clear all
                     </button>
                   </div>
@@ -569,16 +627,16 @@ export default function Home() {
 
                       return (
                         <div key={stage.id} className="min-w-0">
-                          <div className={`mb-2 h-1 rounded-full ${isComplete || isCurrent ? "bg-[#9cba48]" : "bg-[#e6e8e1]"}`}>
+                          <div className={`mb-2 h-1 rounded-full ${isComplete || isCurrent ? "bg-blue-500" : "bg-white/10"}`}>
                             {isCurrent && stage.id !== "ready" && (
                               <div
-                                className={`h-full rounded-full bg-[#718c30] ${stage.id === "uploading" ? "animate-pulse" : ""}`}
+                                className={`h-full rounded-full bg-[#3b82f6] ${stage.id === "uploading" ? "animate-pulse" : ""}`}
                                 style={{ width: fillWidth }}
                               />
                             )}
                           </div>
-                          <p className={`truncate text-[10px] font-medium sm:text-[11px] ${isComplete || isCurrent ? "text-[#505747]" : "text-[#a0a39b]"}`}>
-                            {isComplete && <span className="mr-1 inline-flex align-[-2px] text-[#849e43]"><CheckIcon /></span>}
+                          <p className={`truncate text-[10px] font-medium sm:text-[11px] ${isComplete || isCurrent ? "text-slate-200" : "text-slate-500"}`}>
+                            {isComplete && <span className="mr-1 inline-flex align-[-2px] text-blue-400"><Check aria-hidden="true" className="size-3.5" /></span>}
                             {stage.label}
                           </p>
                         </div>
@@ -586,13 +644,13 @@ export default function Home() {
                     })}
                   </div>
                   {status === "error" && error && (
-                    <p role="alert" className="mt-3 text-xs font-medium text-[#b34e3a]">{error}</p>
+                    <p role="alert" className="mt-3 text-xs font-medium text-rose-300">{error}</p>
                   )}
                   {status === "error" && (
                     <button
                       type="button"
                       onClick={() => void startGeneration(images)}
-                      className="mt-3 text-xs font-semibold text-[#536b2d] underline underline-offset-2"
+                      className="mt-3 text-xs font-semibold text-blue-300 underline underline-offset-2"
                     >
                       Try again
                     </button>
@@ -600,15 +658,15 @@ export default function Home() {
                 </div>
               )}
               {status === "ready" && modelUrls && (
-                <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-[#e7ebdc] bg-[#f7f9f1] px-4 py-3">
-                  <span className="mr-auto text-xs font-semibold text-[#505747]">Download model</span>
+                <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-3">
+                  <span className="mr-auto text-xs font-semibold text-white">Download model</span>
                   {modelUrls.glb && (
-                    <a href={modelUrls.glb} target="_blank" rel="noreferrer" className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-[#536b2d] shadow-sm hover:bg-[#eef3e4]">
+                    <a href={modelUrls.glb} target="_blank" rel="noreferrer" className="button-secondary">
                       GLB
                     </a>
                   )}
                   {modelUrls.stl && (
-                    <a href={modelUrls.stl} target="_blank" rel="noreferrer" className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-[#536b2d] shadow-sm hover:bg-[#eef3e4]">
+                    <a href={modelUrls.stl} target="_blank" rel="noreferrer" className="button-secondary">
                       STL
                     </a>
                   )}
@@ -617,63 +675,76 @@ export default function Home() {
                       type="button"
                       onClick={() => exportModel?.()}
                       disabled={!exportModel}
-                      className="w-full rounded-lg bg-[#29352b] px-4 py-3 text-xs font-semibold text-white shadow-sm transition hover:bg-[#394a36] disabled:cursor-wait disabled:opacity-60"
+                      className="button-primary w-full"
                     >
                       {exportModel ? "Download for 3D Printing (STL)" : "Preparing STL export…"}
                     </button>
                   )}
                 </div>
               )}
-              {exportError && <p role="alert" className="mt-2 text-xs font-medium text-[#b34e3a]">{exportError}</p>}
+              {exportError && <p role="alert" className="mt-2 text-xs font-medium text-rose-300">{exportError}</p>}
             </div>
-            <div className="flex items-center gap-2 border-t border-[#efefec] px-5 py-3.5 text-[11px] text-[#93968e] sm:px-7">
-              <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" className="size-4 shrink-0">
-                <path d="M8 1.8 13 4v3.4c0 3.1-2.1 5.4-5 6.8-2.9-1.4-5-3.7-5-6.8V4l5-2.2Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
-                <path d="m5.8 8 1.5 1.5 3-3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              Your photos are sent securely to Meshy to generate your model.
+            <div className="flex items-start gap-2 border-t border-white/[0.08] px-4 py-3.5 text-[11px] leading-normal text-slate-400 sm:px-6">
+              <LockKeyhole aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-blue-400" strokeWidth={1.5} />
+              Your photos are sent securely to our image-generation service.
             </div>
           </section>
 
-          <aside className="rounded-[22px] border border-[#e8e9e4] bg-white p-5 shadow-[0_8px_30px_rgba(27,31,24,0.035)] sm:p-6">
-            <div className="mb-6 flex items-start justify-between">
-              <div>
-                <div className="mb-3 flex size-10 items-center justify-center rounded-xl bg-[#f1f5e8] text-[#849c48]"><CubeIcon /></div>
-                <h2 className="text-sm font-semibold">Print dimensions</h2>
-                <p className="mt-1 text-xs text-[#92958d]">Set the finished model size</p>
+          <aside
+            id="model"
+            className="scroll-mt-28 rounded-2xl border border-white/[0.08] bg-[#12151E] p-4 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.06)] sm:p-6"
+          >
+            <div className="mb-5">
+              <span className="inline-flex rounded-full border border-blue-400/20 bg-blue-500/15 px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-blue-300 tabular-nums">
+                02 · Size &amp; Create
+              </span>
+              <div className="mt-3 flex items-center gap-3">
+                <div className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-blue-400/20 bg-blue-500/10 text-blue-400">
+                  <Box aria-hidden="true" className="size-[18px]" strokeWidth={1.5} />
+                </div>
+                <div className="min-w-0">
+                  <h2 className="text-base font-semibold tracking-tight text-white sm:text-lg">Print dimensions</h2>
+                  <p className="mt-0.5 text-xs leading-normal text-slate-400 sm:text-sm">Set the finished model size</p>
+                </div>
               </div>
-              <span className="rounded-full bg-[#f3f5ed] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-[#7b8e4a]">Step 02</span>
             </div>
 
             <div className="space-y-3">
               {(["x", "y", "z"] as const).map((dimension) => (
-                <label key={dimension} className="flex items-center justify-between gap-4 rounded-xl border border-[#eceee8] px-4 py-3.5 transition focus-within:border-[#afc17e]">
-                  <span className="flex items-center gap-3">
+                <label key={dimension} className="flex min-w-0 items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-white/[0.025] px-3 py-3 transition focus-within:border-blue-400/60 sm:px-4">
+                  <span className="flex min-w-0 items-center gap-3">
                     <span className={`flex size-7 items-center justify-center rounded-lg text-xs font-semibold ${
-                      dimension === "x" ? "bg-[#f3eee6] text-[#a17d4b]" : dimension === "y" ? "bg-[#eaf1f2] text-[#648b91]" : "bg-[#f0edf5] text-[#8975a2]"
-                    }`}>{dimension.toUpperCase()}</span>
-                    <span className="text-xs font-medium text-[#5b5f56]">{dimensionLabels[dimension]}</span>
+                      dimension === "x" ? "bg-amber-400/10 text-amber-300" : dimension === "y" ? "bg-cyan-400/10 text-cyan-300" : "bg-violet-400/10 text-violet-300"
+                    } font-mono`}>{dimension.toUpperCase()}</span>
+                    <span className="truncate text-xs font-medium text-slate-300">{dimensionLabels[dimension]}</span>
                   </span>
-                  <span className="flex items-center gap-2">
+                  <span className="flex min-w-0 items-center gap-1.5">
                     <input
                       aria-label={`${dimensionLabels[dimension]} in millimeters`}
                       type="number"
                       min="0.1"
-                      step="0.1"
+                      max={
+                        dimension === "x" && aspectRatio
+                          ? 250
+                          : dimension === "z" && aspectRatio
+                            ? Math.max(1, Math.min(250, Math.floor(250 / aspectRatio)))
+                            : undefined
+                      }
+                      step={dimension === "x" && aspectRatio ? "1" : "0.1"}
                       value={dimensions[dimension]}
                       onChange={(event) => updateDimension(dimension, event.target.value)}
-                      className="w-20 bg-transparent text-right text-sm font-semibold tabular-nums text-[#353932] outline-none"
+                      className="w-16 min-w-0 bg-transparent text-right font-mono text-sm font-semibold tabular-nums text-white outline-none sm:w-20"
                     />
-                    <span className="text-[11px] text-[#9a9d94]">mm</span>
+                    <span className="text-[11px] text-slate-500">mm</span>
                   </span>
                 </label>
               ))}
             </div>
 
-            <div className="mt-5 rounded-xl bg-[#f8f9f5] px-4 py-3.5">
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="text-[#858980]">Estimated footprint</span>
-                <span className="font-semibold tabular-nums text-[#4d5345]">
+            <div className="mt-5 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-3.5 sm:px-4">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                <span className="text-slate-400">Estimated footprint</span>
+                <span className="max-w-full font-mono font-semibold tabular-nums text-slate-100">
                   {dimensions.x || "0"} × {dimensions.y || "0"} × {dimensions.z || "0"} mm
                 </span>
               </div>
@@ -683,29 +754,29 @@ export default function Home() {
               type="button"
               onClick={open}
               disabled={images.length >= 4 || status === "uploading" || status === "generating"}
-              className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl border border-[#dfe4d5] bg-white px-4 py-3 text-sm font-semibold text-[#536344] transition hover:bg-[#f8faf4] disabled:cursor-not-allowed disabled:opacity-50"
+              className="button-secondary mt-5 w-full gap-2"
             >
-              <PhotoIcon />
+              <UploadCloud aria-hidden="true" className="size-5" />
               {images.length ? "Add more photos" : "Choose photos"}
             </button>
             <button
               type="button"
               onClick={() => void startGeneration(images)}
               disabled={images.length === 0 || status === "uploading" || status === "generating"}
-              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-[#29352b] px-4 py-3.5 text-sm font-semibold text-white transition hover:bg-[#394a36] disabled:cursor-not-allowed disabled:opacity-50"
+              className="button-primary mt-2 w-full gap-2"
             >
-              <CubeIcon className="size-[18px] text-[#d5eb89]" />
+              <Sparkles aria-hidden="true" className="size-[18px] text-[#bfdbfe]" />
               {status === "ready" ? "Regenerate 3D model" : status === "uploading" || status === "generating" ? "Generating model…" : status === "error" ? "Try again" : "Generate 3D model"}
             </button>
-            <p className="mt-3 text-center text-[10px] leading-5 text-[#a0a39b]">
+            <p className="mt-3 text-center text-[10px] leading-5 text-slate-500">
               {status === "error" ? "Your photos are still here if you want to retry." : images.length ? "Dimensions are saved with this session." : "Add one to four photos of the same object."}
             </p>
           </aside>
         </div>
 
-        <footer className="mt-9 flex flex-col gap-2 border-t border-[#e8e9e4] pt-5 text-[11px] text-[#a0a39b] sm:flex-row sm:items-center sm:justify-between">
+        <footer id="textures" className="mt-9 flex scroll-mt-28 flex-col gap-2 border-t border-white/[0.08] pt-5 text-[11px] text-slate-500 sm:flex-row sm:items-center sm:justify-between">
           <span>Capture &amp; Create - 3D Print Studio</span>
-          <span>Image-to-model generation powered by Meshy</span>
+          <span>Precision image-to-model generation</span>
         </footer>
       </div>
     </main>

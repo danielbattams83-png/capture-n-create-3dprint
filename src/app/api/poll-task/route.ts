@@ -59,7 +59,7 @@ export async function POST(request: Request) {
 
     if (!isRecord(task) || typeof task.status !== "string" || !taskStatuses.has(task.status)) {
       return NextResponse.json(
-        { error: "Meshy returned an invalid task status." },
+        { error: "The image generation service returned an invalid task status." },
         { status: 502 },
       );
     }
@@ -78,8 +78,8 @@ export async function POST(request: Request) {
         error:
           taskError ??
           (task.status === "FAILED"
-            ? "Meshy could not generate a model from this image."
-            : "The Meshy generation task was canceled."),
+            ? "The image generation service could not create a model from this image."
+            : "The image generation task was canceled."),
       });
     }
 
@@ -89,7 +89,7 @@ export async function POST(request: Request) {
       const stl = getSecureModelUrl(modelUrls.stl);
       if (!glb && !stl) {
         return NextResponse.json(
-          { error: "Meshy completed the task without a GLB or STL download URL." },
+          { error: "The image generation service completed the task without a GLB or STL download URL." },
           { status: 502 },
         );
       }
@@ -112,7 +112,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }
 
-    console.error("Meshy task polling failed.", error);
+    console.error("Image generation task polling failed.", error);
     return NextResponse.json({ error: "Unable to check the model task." }, { status: 500 });
   }
 }

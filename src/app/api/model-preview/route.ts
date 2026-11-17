@@ -72,7 +72,7 @@ export async function POST(request: Request) {
     const modelUrl = getModelUrl(task.model_urls.glb);
     if (!modelUrl) {
       return NextResponse.json(
-        { error: "Meshy did not return a valid GLB preview URL." },
+        { error: "The image generation service did not return a valid GLB preview URL." },
         { status: 502 },
       );
     }
@@ -93,14 +93,14 @@ export async function POST(request: Request) {
       }
 
       return NextResponse.json(
-        { error: "The 3D model could not be downloaded from Meshy. Try loading the preview again." },
+        { error: "The 3D model could not be downloaded. Try loading the preview again." },
         { status: 502 },
       );
     }
 
     if (!modelResponse.ok || !modelResponse.body) {
       return NextResponse.json(
-        { error: `Meshy model download failed (HTTP ${modelResponse.status}).` },
+        { error: `3D model download failed (HTTP ${modelResponse.status}).` },
         { status: 502 },
       );
     }
@@ -120,7 +120,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message }, { status: error.status });
     }
 
-    console.error("Meshy model preview request failed.", error);
+    console.error("3D model preview request failed.", error);
     return NextResponse.json(
       { error: "The 3D model preview could not be loaded." },
       { status: 500 },

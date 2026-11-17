@@ -39,7 +39,7 @@ export type MeshyTaskType = "image-to-3d" | "multi-image-to-3d";
 export function createTaskToken(taskId: string, taskType: MeshyTaskType): string {
   const apiKey = process.env.MESHY_API_KEY;
   if (!apiKey) {
-    throw new MeshyApiError("Meshy API is not configured. Set MESHY_API_KEY in .env.local.", 500);
+    throw new MeshyApiError("Image generation is not configured. Check the server environment.", 500);
   }
   return createHmac("sha256", apiKey).update(`${taskType}:${taskId}`).digest("hex");
 }
@@ -57,11 +57,11 @@ export function getErrorMessage(value: unknown): string | undefined {
 
   const message = value.message ?? value.error;
   if (typeof message === "string" && message.trim()) {
-    return message.trim().slice(0, 500);
+    return message.trim().replace(/meshy/gi, "image generation service").slice(0, 500);
   }
 
   if (isRecord(message) && typeof message.message === "string") {
-    return message.message.trim().slice(0, 500);
+    return message.message.trim().replace(/meshy/gi, "image generation service").slice(0, 500);
   }
 
   return undefined;
@@ -70,7 +70,7 @@ export function getErrorMessage(value: unknown): string | undefined {
 export async function fetchMeshy(path: string, init: RequestInit): Promise<unknown> {
   const apiKey = process.env.MESHY_API_KEY;
   if (!apiKey) {
-    throw new MeshyApiError("Meshy API is not configured. Set MESHY_API_KEY in .env.local.", 500);
+    throw new MeshyApiError("Image generation is not configured. Check the server environment.", 500);
   }
 
   const headers = new Headers(init.headers);
@@ -87,29 +87,29 @@ export async function fetchMeshy(path: string, init: RequestInit): Promise<unkno
     });
   } catch (error) {
     if (error instanceof Error && error.name === "TimeoutError") {
-      throw new MeshyApiError("Meshy API request timed out. Please try again.", 504);
+      throw new MeshyApiError("The image generation request timed out. Please try again.", 504);
     }
 
-    throw new MeshyApiError("Unable to reach the Meshy API. Please try again.", 502);
+    throw new MeshyApiError("Unable to reach the image generation service. Please try again.", 502);
   }
 
   let payload: unknown;
   try {
     payload = await response.json();
   } catch {
-    throw new MeshyApiError("Meshy API returned an invalid response.", 502);
+    throw new MeshyApiError("The image generation service returned an invalid response.", 502);
   }
 
   if (!response.ok) {
     if (response.status === 401) {
-      throw new MeshyApiError("Meshy rejected the server API key. Check MESHY_API_KEY.", 500);
+      throw new MeshyApiError("The image generation service rejected its server credentials.", 500);
     }
 
     const status =
       response.status === 429 ? 503 : response.status >= 500 ? 502 : response.status;
     const message = getErrorMessage(payload);
     throw new MeshyApiError(
-      message ? `Meshy API error: ${message}` : "Meshy API request failed.",
+      message ? `Image generation error: ${message}` : "The image generation request failed.",
       status,
     );
   }
