@@ -102,6 +102,22 @@ export async function listCreations(): Promise<StoredCreation[]> {
   }
 }
 
+export async function getCreation(id: string): Promise<StoredCreation | undefined> {
+  await purgeExpiredCreations();
+  const database = await openDatabase();
+  try {
+    const transaction = database.transaction(STORE_NAME, "readonly");
+    const request = transaction.objectStore(STORE_NAME).get(id);
+    const creation = await requestResult(
+      request as IDBRequest<StoredCreation | undefined>,
+    );
+    await transactionDone(transaction);
+    return creation;
+  } finally {
+    database.close();
+  }
+}
+
 export async function saveCreation(input: {
   id: string;
   name: string;

@@ -11,12 +11,12 @@ import CameraCapture from "@/components/camera-capture";
 import GenerationModal from "@/components/generation-modal";
 import ImagePreprocessingModal from "@/components/image-preprocessing-modal";
 import type { ProcessedImageReview } from "@/components/image-preprocessing-modal";
-import AssetBrowser from "@/components/asset-browser";
 import TextureGenerator from "@/components/texture-generator";
 import { isolateAndCropSubject } from "@/lib/image-preprocessing";
-import type { KhronosAsset } from "@/lib/khronos-assets";
+import { fetchKhronosAssets, type KhronosAsset } from "@/lib/khronos-assets";
 import {
   createCreationId,
+  getCreation,
   saveCreation,
   updateCreationDimensions,
   type StoredCreation,
@@ -27,15 +27,6 @@ const ModelViewer = dynamic(() => import("@/components/model-viewer"), {
   loading: () => (
     <div className="flex h-[360px] items-center justify-center rounded-2xl bg-[#0b0d10] font-mono text-xs font-medium text-[#9ca3af] sm:h-[420px]">
       Preparing 3D preview…
-    </div>
-  ),
-});
-
-const CreationsCarousel = dynamic(() => import("@/components/creations-carousel"), {
-  ssr: false,
-  loading: () => (
-    <div className="mt-10 flex min-h-72 items-center justify-center rounded-[22px] border border-[#e8e9e4] bg-white font-mono text-xs text-[#92958d]">
-      Loading local creations…
     </div>
   ),
 });
@@ -113,7 +104,7 @@ export default function Home() {
   const [previewError, setPreviewError] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [exportModel, setExportModel] = useState<ModelExportAction | null>(null);
-  const [creationsRefreshKey, setCreationsRefreshKey] = useState(0);
+  const [, setCreationsRefreshKey] = useState(0);
   const [editingCreationId, setEditingCreationId] = useState<string | null>(null);
   const [catalogModel, setCatalogModel] = useState<{
     asset: KhronosAsset;
@@ -129,6 +120,7 @@ export default function Home() {
   const pendingPreviewUrls = useRef<string[]>([]);
   const preprocessingRun = useRef(0);
   const previewTask = useRef<PreviewTask | null>(null);
+  const routeModelLoadHandled = useRef(false);
   const [dimensions, setDimensions] = useState<Record<PrintDimension, string>>({
     x: "100",
     y: "3",
@@ -635,7 +627,7 @@ export default function Home() {
     setCatalogSaveStatus("idle");
   };
 
-  const editCreation = (creation: StoredCreation) => {
+  const editCreation = useCallback((creation: StoredCreation) => {
     activeRequest.current?.abort();
     activeRequest.current = null;
     const modelUrl = URL.createObjectURL(creation.model);
@@ -665,13 +657,13 @@ export default function Home() {
     window.setTimeout(
       () =>
         document
-          .getElementById("model-preview")
+          .getElementById("created-model")
           ?.scrollIntoView({ behavior: "smooth", block: "center" }),
       0,
     );
-  };
+  }, []);
 
-  const editCatalogAsset = async (asset: KhronosAsset) => {
+  const editCatalogAsset = useCallback(async (asset: KhronosAsset) => {
     activeRequest.current?.abort();
     activeRequest.current = null;
     setPreviewLoading(true);
@@ -708,7 +700,7 @@ export default function Home() {
       window.setTimeout(
         () =>
           document
-            .getElementById("model-preview")
+            .getElementById("created-model")
             ?.scrollIntoView({ behavior: "smooth", block: "center" }),
         0,
       );
@@ -719,7 +711,7 @@ export default function Home() {
     } finally {
       setPreviewLoading(false);
     }
-  };
+  }, []);
 
   const saveCatalogModel = async () => {
     if (!catalogModel || catalogModel.savedId) return;
@@ -778,6 +770,70 @@ export default function Home() {
     }
   };
 
+  const saveActiveModelToCollections = async () => {
+    if (!activeModelBlob) return;
+    if (catalogModel && !catalogModel.savedId) {
+      await saveCatalogModel();
+      return;
+    }
+    if (editingCreationId) return;
+
+    setCatalogSaveStatus("saving");
+    try {
+      const creation = await saveCreation({
+        id: createCreationId("collection"),
+        name: activeModelName || "Created model",
+        model: activeModelBlob,
+        dimensions: {
+          width: getDimensionValue("x"),
+          depth: getDimensionValue("y"),
+          height: getDimensionValue("z"),
+        },
+      });
+      setEditingCreationId(creation.id);
+      setCreationsRefreshKey((current) => current + 1);
+      setCatalogSaveStatus("saved");
+    } catch (storageError) {
+      console.error("Could not save the active model to Collections.", storageError);
+      setCatalogSaveStatus("error");
+    }
+  };
+
+  useEffect(() => {
+    if (routeModelLoadHandled.current) return;
+    routeModelLoadHandled.current = true;
+    const parameters = new URLSearchParams(window.location.search);
+    const creationId = parameters.get("creation");
+    const assetId = parameters.get("asset");
+    if (!creationId && !assetId) return;
+
+    const loadRequestedModel = async () => {
+      try {
+        if (creationId) {
+          const creation = await getCreation(creationId);
+          if (!creation) {
+            throw new Error("That saved creation is no longer available.");
+          }
+          editCreation(creation);
+          return;
+        }
+
+        const assets = await fetchKhronosAssets();
+        const asset = assets.find(({ id }) => id === assetId);
+        if (!asset) throw new Error("That free model could not be found.");
+        await editCatalogAsset(asset);
+      } catch (loadError) {
+        setError(
+          loadError instanceof Error
+            ? loadError.message
+            : "The selected model could not be opened.",
+        );
+      }
+    };
+
+    void loadRequestedModel();
+  }, [editCatalogAsset, editCreation]);
+
   return (
     <>
     <main className="min-h-screen bg-[#f7f7f5] text-[#20211f]">
@@ -795,25 +851,17 @@ export default function Home() {
           </p>
         </div>
 
-        <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1.65fr)_minmax(320px,0.85fr)]">
-          <div className="relative pt-10">
+        <div className="flex flex-col gap-10">
+          <div id="create-image" className="relative scroll-mt-40 pt-10">
             <span className="absolute right-5 top-0 flex h-10 items-center rounded-t-xl border border-b-0 border-[#232832] bg-[#17243a] px-5 font-mono text-sm font-semibold uppercase tracking-[0.12em] text-[#93c5fd]">
               Step One
             </span>
-            <section id="model-preview" className="overflow-hidden rounded-[22px] border border-[#e8e9e4] bg-white shadow-[0_8px_30px_rgba(27,31,24,0.035)]">
+            <section id="capture" className="overflow-hidden rounded-[22px] border border-[#e8e9e4] bg-white shadow-[0_8px_30px_rgba(27,31,24,0.035)]">
             <div className="flex items-center justify-between border-b border-[#efefec] px-5 py-4 sm:px-7">
               <div>
-                <h2 className="text-sm font-semibold">
-                  {catalogModel
-                    ? `Editing ${catalogModel.asset.label}`
-                    : status === "ready" && modelUrls?.glb
-                      ? "3D model preview"
-                      : "Your photos"}
-                </h2>
+                <h2 className="text-sm font-semibold">Photo capture &amp; preparation</h2>
                 <p className="mt-1 text-xs text-[#969991]">
-                  {status === "ready" && modelUrls?.glb
-                    ? "Inspect your model before printing"
-                    : "Upload up to four views of the same object"}
+                  Upload up to four views; each subject is isolated and cropped for approval.
                 </p>
               </div>
             </div>
@@ -827,40 +875,7 @@ export default function Home() {
                 })}
               >
                 <input {...getInputProps()} />
-                {status === "ready" && modelUrls?.glb && previewModelUrl ? (
-                  <ModelViewer
-                    modelUrl={previewModelUrl}
-                    width={getDimensionValue("x")}
-                    depth={getDimensionValue("y")}
-                    height={getDimensionValue("z")}
-                    onExportReady={registerExportModel}
-                    onExportError={setExportError}
-                    onRetry={() => void retryModelPreview()}
-                  />
-                ) : status === "ready" && modelUrls?.glb ? (
-                  <div
-                    className="flex min-h-[340px] w-full flex-col items-center justify-center px-6 text-center sm:min-h-[420px]"
-                    role="status"
-                  >
-                    <Box aria-hidden="true" className="size-8 text-[#60a5fa]" />
-                    <p className="mt-4 text-sm font-semibold text-[#505747]">
-                      {previewLoading ? "Loading your 3D preview…" : "Preview unavailable"}
-                    </p>
-                    <p className="mt-2 max-w-sm text-xs leading-5 text-[#898d84]">
-                      {previewError ||
-                        "The model is ready. You can still download it while the preview loads."}
-                    </p>
-                    {!previewLoading && previewError && (
-                      <button
-                        type="button"
-                        onClick={() => void retryModelPreview()}
-                        className="mt-4 rounded-lg border border-[#dfe2d9] bg-white px-3 py-2 text-xs font-semibold text-[#536b2d] shadow-sm transition hover:bg-[#f3f5ed]"
-                      >
-                        Retry preview
-                      </button>
-                    )}
-                  </div>
-                ) : images.length > 0 ? (
+                {images.length > 0 ? (
                   <div className="grid w-full grid-cols-2 gap-3 p-4 sm:grid-cols-4 sm:p-5">
                     {images.map(({ file, previewUrl }, index) => (
                       <div key={`${file.name}-${file.lastModified}-${index}`} className="group relative aspect-square overflow-hidden rounded-xl border border-[#e6e9df] bg-white">
@@ -1033,71 +1048,6 @@ export default function Home() {
                   )}
                 </div>
               )}
-              {status === "ready" && modelUrls && (
-                <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl border border-[#e7ebdc] bg-[#f7f9f1] px-4 py-3">
-                  <span className="mr-auto text-xs font-semibold text-[#505747]">Download model</span>
-                  {modelUrls.glb && (
-                    <a href={modelUrls.glb} target="_blank" rel="noreferrer" className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-[#536b2d] shadow-sm hover:bg-[#eef3e4]">
-                      GLB
-                    </a>
-                  )}
-                  {modelUrls.stl && (
-                    <a href={modelUrls.stl} target="_blank" rel="noreferrer" className="rounded-lg bg-white px-3 py-2 text-xs font-semibold text-[#536b2d] shadow-sm hover:bg-[#eef3e4]">
-                      STL
-                    </a>
-                  )}
-                  {modelUrls.glb && (
-                    <button
-                      type="button"
-                      onClick={() => exportModel?.()}
-                      disabled={!exportModel}
-                      className="w-full rounded-lg bg-[#29352b] px-4 py-3 text-xs font-semibold text-white shadow-sm transition hover:bg-[#394a36] disabled:cursor-wait disabled:opacity-60"
-                    >
-                      {exportModel ? "Download for 3D Printing (STL)" : "Preparing STL export…"}
-                    </button>
-                  )}
-                </div>
-              )}
-              {status === "ready" && activeModelBlob && previewModelUrl && (
-                <TextureGenerator
-                  model={activeModelBlob}
-                  onTextureReady={applyGeneratedTexture}
-                />
-              )}
-              {catalogModel && (
-                <div className="mt-3 rounded-xl border border-[#d9e4f7] bg-[#f4f7fc] px-4 py-3">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <div className="mr-auto">
-                      <p className="text-xs font-semibold text-[#34445e]">
-                        Keep this edit
-                      </p>
-                      <p className="mt-1 text-[11px] text-[#748097]">
-                        Save the model and current dimensions locally for 7 days.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => void saveCatalogModel()}
-                      disabled={
-                        catalogSaveStatus === "saving" || catalogSaveStatus === "saved"
-                      }
-                      className="rounded-lg bg-[#3975d7] px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-[#2f65bd] disabled:cursor-default disabled:bg-[#7198d8]"
-                    >
-                      {catalogSaveStatus === "saving"
-                        ? "Saving…"
-                        : catalogSaveStatus === "saved"
-                          ? "Saved to Creations"
-                          : "Save to Creations"}
-                    </button>
-                  </div>
-                  {catalogSaveStatus === "error" && (
-                    <p role="alert" className="mt-2 text-xs font-medium text-[#a64040]">
-                      This model could not be saved locally. Please try again.
-                    </p>
-                  )}
-                </div>
-              )}
-              {exportError && <p role="alert" className="mt-2 text-xs font-medium text-[#b34e3a]">{exportError}</p>}
             </div>
             <div className="flex items-center gap-2 border-t border-[#efefec] px-5 py-3.5 text-[11px] text-[#93968e] sm:px-7">
               <LockKeyhole aria-hidden="true" className="size-4 shrink-0 text-[#60a5fa]" />
@@ -1106,20 +1056,20 @@ export default function Home() {
             </section>
           </div>
 
-          <div className="relative pt-10">
+          <div id="model-settings" className="relative scroll-mt-40 pt-10">
             <span className="absolute right-5 top-0 flex h-10 items-center rounded-t-xl border border-b-0 border-[#232832] bg-[#17243a] px-5 font-mono text-sm font-semibold uppercase tracking-[0.12em] text-[#93c5fd]">
               Step Two
             </span>
-            <aside className="rounded-[22px] border border-[#e8e9e4] bg-white p-5 shadow-[0_8px_30px_rgba(27,31,24,0.035)] sm:p-6">
+            <aside className="rounded-[22px] border border-[#e8e9e4] bg-white p-5 shadow-[0_8px_30px_rgba(27,31,24,0.035)] sm:p-8">
             <div className="mb-6 flex items-start justify-between">
               <div>
                 <div className="mb-3 flex size-10 items-center justify-center rounded-xl bg-[#17243a] text-[#60a5fa]"><Box aria-hidden="true" className="size-5" /></div>
-                <h2 className="text-sm font-semibold">Print dimensions</h2>
-                <p className="mt-1 text-xs text-[#92958d]">Set the finished model size</p>
+                <h2 className="text-sm font-semibold">3D model generation &amp; parameters</h2>
+                <p className="mt-1 text-xs text-[#92958d]">Set the finished size, then generate the model.</p>
               </div>
             </div>
 
-            <div className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-3">
               {(["x", "y", "z"] as const).map((dimension) => (
                 <label key={dimension} className="flex items-center justify-between gap-4 rounded-xl border border-[#eceee8] px-4 py-3.5 transition focus-within:border-[#afc17e]">
                   <span className="flex items-center gap-3">
@@ -1179,9 +1129,179 @@ export default function Home() {
           </div>
         </div>
 
-        <AssetBrowser onEdit={editCatalogAsset} />
+        <section
+          id="created-model"
+          className="mt-10 scroll-mt-40 overflow-hidden rounded-[22px] border border-white/[0.08] bg-[#182028] shadow-[0_12px_32px_-18px_rgba(0,0,0,0.6)]"
+        >
+          <div className="border-b border-white/[0.08] px-5 py-5 sm:px-7">
+            <p className="font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-[#60a5fa]">
+              Created model
+            </p>
+            <h2 className="mt-1 text-xl font-bold tracking-[-0.025em] text-white">
+              {activeModelName || "Your generated output"}
+            </h2>
+            <p className="mt-1 text-xs text-[#94a3b8]">
+              Inspect, save, texture, or export the finished model.
+            </p>
+          </div>
 
-        <CreationsCarousel refreshKey={creationsRefreshKey} onEdit={editCreation} />
+          {status === "ready" && modelUrls?.glb && previewModelUrl ? (
+            <div className="p-4 sm:p-6">
+              <div className="grid items-stretch gap-4 lg:grid-cols-[minmax(0,1.5fr)_minmax(280px,0.5fr)]">
+                <ModelViewer
+                  modelUrl={previewModelUrl}
+                  width={getDimensionValue("x")}
+                  depth={getDimensionValue("y")}
+                  height={getDimensionValue("z")}
+                  onExportReady={registerExportModel}
+                  onExportError={setExportError}
+                  onRetry={() => void retryModelPreview()}
+                  animated
+                />
+
+                <aside className="flex flex-col rounded-[20px] border border-white/[0.08] bg-[#11171d] p-5">
+                  <span className="w-fit rounded-full border border-[#60a5fa]/35 bg-[#60a5fa]/10 px-3 py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.1em] text-[#93c5fd]">
+                    Ready
+                  </span>
+                  <h3 className="mt-4 text-lg font-semibold text-white">
+                    Continue your model
+                  </h3>
+                  <p className="mt-2 text-sm leading-6 text-[#94a3b8]">
+                    Current size: {dimensions.x || "0"} × {dimensions.y || "0"} ×{" "}
+                    {dimensions.z || "0"} mm
+                  </p>
+
+                  <div className="mt-5 grid gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void saveActiveModelToCollections()}
+                      disabled={
+                        catalogSaveStatus === "saving" ||
+                        Boolean(editingCreationId) ||
+                        Boolean(catalogModel?.savedId)
+                      }
+                      className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#2563eb] px-4 text-sm font-semibold text-white transition hover:bg-[#1d4ed8] disabled:cursor-default disabled:bg-[#334155] disabled:text-[#94a3b8]"
+                    >
+                      <Check aria-hidden="true" className="size-4" />
+                      {catalogSaveStatus === "saving"
+                        ? "Saving…"
+                        : editingCreationId || catalogModel?.savedId
+                          ? "Saved to Collections"
+                          : "Save to Collections"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        document
+                          .getElementById("texture-studio")
+                          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+                        window.setTimeout(
+                          () =>
+                            document
+                              .querySelector<HTMLTextAreaElement>(
+                                "#texture-studio textarea",
+                              )
+                              ?.focus(),
+                          450,
+                        );
+                      }}
+                      className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-white/[0.12] bg-[#1e242b] px-4 text-sm font-semibold text-white transition hover:border-[#60a5fa]/45 hover:bg-[#24303c]"
+                    >
+                      <Sparkles aria-hidden="true" className="size-4 text-[#93c5fd]" />
+                      Send to Textures
+                    </button>
+                  </div>
+
+                  <div className="mt-auto pt-5">
+                    <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.1em] text-[#7d8794]">
+                      Download
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {modelUrls.glb && (
+                        <a
+                          href={modelUrls.glb}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rounded-lg border border-white/[0.1] px-3 py-2 text-xs font-semibold text-[#d7dde5] hover:bg-[#1e242b]"
+                        >
+                          GLB
+                        </a>
+                      )}
+                      {modelUrls.stl && (
+                        <a
+                          href={modelUrls.stl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rounded-lg border border-white/[0.1] px-3 py-2 text-xs font-semibold text-[#d7dde5] hover:bg-[#1e242b]"
+                        >
+                          STL
+                        </a>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => exportModel?.()}
+                        disabled={!exportModel}
+                        className="rounded-lg border border-white/[0.1] px-3 py-2 text-xs font-semibold text-[#d7dde5] hover:bg-[#1e242b] disabled:opacity-45"
+                      >
+                        Print-ready STL
+                      </button>
+                    </div>
+                  </div>
+                </aside>
+              </div>
+
+              {activeModelBlob && (
+                <div id="texture-studio" className="scroll-mt-40">
+                  <TextureGenerator
+                    model={activeModelBlob}
+                    onTextureReady={applyGeneratedTexture}
+                  />
+                </div>
+              )}
+              {catalogSaveStatus === "error" && (
+                <p role="alert" className="mt-3 text-xs font-medium text-[#fda4af]">
+                  The model could not be saved to Collections. Please try again.
+                </p>
+              )}
+              {exportError && (
+                <p role="alert" className="mt-3 text-xs font-medium text-[#fda4af]">
+                  {exportError}
+                </p>
+              )}
+            </div>
+          ) : status === "ready" && modelUrls?.glb ? (
+            <div className="flex min-h-80 flex-col items-center justify-center px-6 text-center">
+              <Box aria-hidden="true" className="size-8 text-[#60a5fa]" />
+              <p className="mt-4 text-sm font-semibold text-white">
+                {previewLoading ? "Loading your 3D preview…" : "Preview unavailable"}
+              </p>
+              <p className="mt-2 max-w-sm text-xs leading-5 text-[#94a3b8]">
+                {previewError || "The model is ready, but its preview could not be shown."}
+              </p>
+              {!previewLoading && previewError && (
+                <button
+                  type="button"
+                  onClick={() => void retryModelPreview()}
+                  className="mt-4 rounded-xl bg-[#2563eb] px-4 py-2.5 text-xs font-semibold text-white"
+                >
+                  Retry preview
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="flex min-h-72 flex-col items-center justify-center px-6 text-center">
+              <span className="flex size-14 items-center justify-center rounded-2xl border border-[#60a5fa]/25 bg-[#17243a] text-[#60a5fa]">
+                <Box aria-hidden="true" className="size-6" />
+              </span>
+              <p className="mt-4 text-sm font-semibold text-white">
+                Your created model will appear here
+              </p>
+              <p className="mt-2 max-w-sm text-xs leading-5 text-[#94a3b8]">
+                Complete Steps 1 and 2, or load a model from Assets.
+              </p>
+            </div>
+          )}
+        </section>
 
         <footer className="mt-9 flex flex-col gap-2 border-t border-[#e8e9e4] pt-5 text-[11px] text-[#a0a39b] sm:flex-row sm:items-center sm:justify-between">
           <span>Capture &amp; Create - 3D Print Studio</span>
@@ -1249,7 +1369,7 @@ export default function Home() {
         window.setTimeout(
           () =>
             document
-              .getElementById("model-preview")
+              .getElementById("created-model")
               ?.scrollIntoView({ behavior: "smooth", block: "center" }),
           0,
         );

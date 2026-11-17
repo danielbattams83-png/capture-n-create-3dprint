@@ -2,7 +2,7 @@
 
 import { Component, Suspense, useEffect, useMemo, useRef } from "react";
 import type { ReactNode } from "react";
-import { Canvas } from "@react-three/fiber";
+import { Canvas, useFrame } from "@react-three/fiber";
 import { Grid, Html, OrbitControls, useGLTF } from "@react-three/drei";
 import { Box3, Vector3 } from "three";
 import type { Group } from "three";
@@ -18,6 +18,7 @@ type ModelViewerProps = {
   onExportReady: (exportModel: ModelExportAction | null) => void;
   onExportError: (message: string) => void;
   onRetry: () => void;
+  animated?: boolean;
 };
 
 type ViewerErrorBoundaryProps = {
@@ -82,6 +83,7 @@ function LoadedModel({
   height,
   onExportReady,
   onExportError,
+  animated = false,
 }: Omit<ModelViewerProps, "onRetry">) {
   const { scene } = useGLTF(modelUrl);
   const modelRef = useRef<Group>(null);
@@ -103,14 +105,27 @@ function LoadedModel({
     };
   }, [scene, width, depth, height]);
 
+  useFrame(({ clock }, delta) => {
+    const model = modelRef.current;
+    if (!animated || !model) return;
+    model.position.y = Math.sin(clock.elapsedTime * 1.15) * 2;
+    model.rotation.y += delta * 0.22;
+  });
+
   useEffect(() => {
     const model = modelRef.current;
     if (!model) return;
 
     const exportModel = () => {
       try {
+        const previousPositionY = model.position.y;
+        const previousRotationY = model.rotation.y;
+        model.position.y = 0;
+        model.rotation.y = 0;
         model.updateWorldMatrix(true, true);
         const stlData = new STLExporter().parse(model, { binary: true });
+        model.position.y = previousPositionY;
+        model.rotation.y = previousRotationY;
         const blob = new Blob([stlData], { type: "model/stl" });
         const downloadUrl = URL.createObjectURL(blob);
         const link = document.createElement("a");
@@ -155,6 +170,7 @@ export default function ModelViewer({
   onExportReady,
   onExportError,
   onRetry,
+  animated = false,
 }: ModelViewerProps) {
   return (
     <ViewerErrorBoundary resetKey={modelUrl} onRetry={onRetry}>
@@ -176,6 +192,7 @@ export default function ModelViewer({
               height={height}
               onExportReady={onExportReady}
               onExportError={onExportError}
+              animated={animated}
             />
           </Suspense>
           <Grid

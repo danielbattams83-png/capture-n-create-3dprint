@@ -21,11 +21,11 @@ export default function Header() {
 
   return (
     <header className="sticky top-0 z-50 border-b border-white/[0.08] bg-[#11171d]/95 shadow-[0_12px_30px_-18px_rgba(0,0,0,0.8)] backdrop-blur-xl">
-      <div className="border-b border-white/[0.06] px-4 py-3 sm:py-4">
+      <div className="border-b border-white/[0.06] p-0 sm:px-4 sm:py-4">
         <Link
           href="/"
           onClick={scrollToTop}
-          className="mx-auto flex w-fit min-w-0 items-center justify-center rounded-xl focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#60a5fa]"
+          className="mx-auto flex w-full min-w-0 items-center justify-center focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#60a5fa] sm:w-fit sm:rounded-xl"
           aria-label="A.C.E.S. 3D Print Studio home"
         >
           <Image
@@ -34,7 +34,7 @@ export default function Header() {
             width={2197}
             height={1431}
             priority
-            className="h-auto w-[150px] object-contain sm:w-[184px]"
+            className="h-auto w-full object-contain sm:w-[184px]"
           />
         </Link>
       </div>
