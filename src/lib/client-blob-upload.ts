@@ -2,7 +2,7 @@
 
 import { upload } from "@vercel/blob/client";
 
-type UploadKind = "image" | "model";
+type UploadKind = "image" | "model" | "creation";
 
 type UploadSession = {
   authorization: string;
@@ -22,7 +22,9 @@ async function createUploadSession(
     body: JSON.stringify({
       kind,
       files: files.map((file) => ({
-        contentType: file.type || (kind === "model" ? "model/gltf-binary" : ""),
+        contentType:
+          file.type ||
+          (kind === "model" || kind === "creation" ? "model/gltf-binary" : ""),
         size: file.size,
       })),
     }),
@@ -76,7 +78,11 @@ export async function uploadTemporaryFiles(input: {
             authorization: session.authorization,
             kind: input.kind,
           }),
-          contentType: file.type || (input.kind === "model" ? "model/gltf-binary" : undefined),
+          contentType:
+            file.type ||
+            (input.kind === "model" || input.kind === "creation"
+              ? "model/gltf-binary"
+              : undefined),
           multipart: file.size > 5 * 1024 * 1024,
           abortSignal: input.signal,
           onUploadProgress: ({ percentage }) => {

@@ -4,6 +4,20 @@ const ALPHA_THRESHOLD = 8;
 const SUBJECT_PADDING_RATIO = 0.1;
 const MAX_PROCESSED_IMAGE_BYTES = 1_000_000;
 const MIN_OUTPUT_DIMENSION = 32;
+const MAX_PREP_EDGE = 1600;
+const MOBILE_REMOVAL_TIMEOUT_MS = 20_000;
+
+type CropBounds = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type CropScanResult = {
+  bounds?: CropBounds;
+  error?: string;
+};
 
 function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) => {
@@ -90,6 +104,109 @@ async function drawBlobToCanvas(blob: Blob): Promise<HTMLCanvasElement> {
   }
 }
 
+function isMobileBrowser(): boolean {
+  const coarsePointer = window.matchMedia("(pointer: coarse)").matches;
+  const narrowScreen = window.matchMedia("(max-width: 900px)").matches;
+  return coarsePointer || narrowScreen;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      reject(new Error("Background removal took too long on this device."));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        window.clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function bitmapToPngFile(bitmap: ImageBitmap, name: string): Promise<File> {
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    bitmap.close();
+    throw new Error("Image processing is unavailable in this browser.");
+  }
+  context.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  const blob = await canvasToPngBlob(canvas);
+  return new File([blob], name, { type: "image/png", lastModified: Date.now() });
+}
+
+export async function downscalePhoto(file: File, maxEdge = MAX_PREP_EDGE): Promise<File> {
+  if (!("createImageBitmap" in window)) return file;
+
+  const bitmap = await createImageBitmap(file);
+  const largestEdge = Math.max(bitmap.width, bitmap.height);
+  if (largestEdge <= maxEdge) {
+    bitmap.close();
+    return file;
+  }
+
+  const scale = maxEdge / largestEdge;
+  const width = Math.max(1, Math.round(bitmap.width * scale));
+  const height = Math.max(1, Math.round(bitmap.height * scale));
+  const resized = await createImageBitmap(bitmap, {
+    resizeWidth: width,
+    resizeHeight: height,
+    resizeQuality: "high",
+  });
+  bitmap.close();
+  const baseName = file.name.replace(/\.[^.]+$/, "") || "photo";
+  return bitmapToPngFile(resized, `${baseName}.png`);
+}
+
+function scanCropBounds(
+  pixels: Uint8ClampedArray,
+  width: number,
+  height: number,
+  paddingRatio: number,
+): Promise<CropBounds> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL("./cropWorker.ts", import.meta.url), { type: "module" });
+    const copy = new Uint8ClampedArray(pixels);
+    const timeout = window.setTimeout(() => {
+      worker.terminate();
+      reject(new Error("The subject crop timed out."));
+    }, 8000);
+
+    worker.onmessage = (event: MessageEvent<CropScanResult>) => {
+      window.clearTimeout(timeout);
+      worker.terminate();
+      if (event.data.bounds) {
+        resolve(event.data.bounds);
+        return;
+      }
+      reject(new Error(event.data.error ?? "The subject crop could not be scanned."));
+    };
+    worker.onerror = () => {
+      window.clearTimeout(timeout);
+      worker.terminate();
+      reject(new Error("The subject crop could not be scanned."));
+    };
+    worker.postMessage(
+      {
+        pixels: copy,
+        width,
+        height,
+        paddingRatio,
+        alphaThreshold: ALPHA_THRESHOLD,
+      },
+      [copy.buffer],
+    );
+  });
+}
+
 export async function cropTransparentImage(
   transparentImage: Blob,
   paddingRatio = SUBJECT_PADDING_RATIO,
@@ -101,71 +218,52 @@ export async function cropTransparentImage(
 
   const { width, height } = sourceCanvas;
   const pixels = sourceContext.getImageData(0, 0, width, height).data;
-  let minX = width;
-  let minY = height;
-  let maxX = -1;
-  let maxY = -1;
-
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const alpha = pixels[(y * width + x) * 4 + 3];
-      if (alpha <= ALPHA_THRESHOLD) continue;
-      minX = Math.min(minX, x);
-      minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x);
-      maxY = Math.max(maxY, y);
-    }
-  }
-
-  if (maxX < minX || maxY < minY) {
-    throw new Error("No foreground subject was detected in this image.");
-  }
-
-  const subjectWidth = maxX - minX + 1;
-  const subjectHeight = maxY - minY + 1;
-  const paddingX = Math.ceil(subjectWidth * paddingRatio);
-  const paddingY = Math.ceil(subjectHeight * paddingRatio);
-  const cropX = Math.max(0, minX - paddingX);
-  const cropY = Math.max(0, minY - paddingY);
-  const cropMaxX = Math.min(width - 1, maxX + paddingX);
-  const cropMaxY = Math.min(height - 1, maxY + paddingY);
-  const cropWidth = cropMaxX - cropX + 1;
-  const cropHeight = cropMaxY - cropY + 1;
+  const bounds = await scanCropBounds(pixels, width, height, paddingRatio);
 
   const outputCanvas = document.createElement("canvas");
-  outputCanvas.width = cropWidth;
-  outputCanvas.height = cropHeight;
+  outputCanvas.width = bounds.width;
+  outputCanvas.height = bounds.height;
   const outputContext = outputCanvas.getContext("2d");
   if (!outputContext) throw new Error("Image processing is unavailable in this browser.");
   outputContext.drawImage(
     sourceCanvas,
-    cropX,
-    cropY,
-    cropWidth,
-    cropHeight,
+    bounds.x,
+    bounds.y,
+    bounds.width,
+    bounds.height,
     0,
     0,
-    cropWidth,
-    cropHeight,
+    bounds.width,
+    bounds.height,
   );
 
   return encodePngWithinLimit(outputCanvas, maxBytes);
 }
 
 export async function isolateAndCropSubject(file: File): Promise<File> {
-  const { removeBackground } = await import("@imgly/background-removal");
-  const transparentImage = await removeBackground(file, {
-    output: { format: "image/png", quality: 1 },
-  });
-  const croppedImage = await cropTransparentImage(
-    transparentImage,
-    SUBJECT_PADDING_RATIO,
-    Math.min(file.size, MAX_PROCESSED_IMAGE_BYTES),
-  );
-  const baseName = file.name.replace(/\.[^.]+$/, "") || "subject";
+  const prepared = await downscalePhoto(file);
+  const baseName = prepared.name.replace(/\.[^.]+$/, "") || "subject";
 
-  return new File([croppedImage], `${baseName}-isolated.png`, {
-    type: "image/png",
-    lastModified: Date.now(),
-  });
+  try {
+    const { removeBackground } = await import("@imgly/background-removal");
+    const removal = removeBackground(prepared, {
+      output: { format: "image/png", quality: 1 },
+    });
+    const transparentImage = isMobileBrowser()
+      ? await withTimeout(removal, MOBILE_REMOVAL_TIMEOUT_MS)
+      : await removal;
+    const croppedImage = await cropTransparentImage(
+      transparentImage,
+      SUBJECT_PADDING_RATIO,
+      Math.min(prepared.size, MAX_PROCESSED_IMAGE_BYTES),
+    );
+    return new File([croppedImage], `${baseName}-isolated.png`, {
+      type: "image/png",
+      lastModified: Date.now(),
+    });
+  } catch (error) {
+    if (!isMobileBrowser()) throw error;
+    console.error("Background removal was skipped on this device.", error);
+    return prepared;
+  }
 }

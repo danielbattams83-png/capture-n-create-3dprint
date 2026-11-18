@@ -8,7 +8,7 @@ import { Box3, Vector3 } from "three";
 import type { Group } from "three";
 import { Box, ChevronLeft, ChevronRight, Download, Pencil } from "lucide-react";
 import {
-  getExpirationDays,
+  creationExpiryLabel,
   listCreations,
   type StoredCreation,
 } from "@/lib/creations-storage";
@@ -191,7 +191,7 @@ export default function CreationsCarousel({
   const activeIndex = creations.findIndex(({ id }) => id === activeId);
   const activeCreation = activeIndex >= 0 ? creations[activeIndex] : null;
   const activeExpiresIn = activeCreation
-    ? getExpirationDays(activeCreation.expiresAt)
+    ? creationExpiryLabel(activeCreation.expiresAt)
     : null;
 
   useEffect(() => {
@@ -214,7 +214,7 @@ export default function CreationsCarousel({
 
   const renderSideCard = (creation: CreationView, index: number) => {
     const side = index < activeIndex ? -1 : 1;
-    const expiresIn = getExpirationDays(creation.expiresAt);
+    const expiresIn = creationExpiryLabel(creation.expiresAt);
     return (
       <div
         key={creation.id}
@@ -243,9 +243,7 @@ export default function CreationsCarousel({
           </span>
         </div>
         <div className="absolute left-3 top-3 rounded-full border border-white/10 bg-black/50 px-2.5 py-1 font-mono text-[9px] text-white shadow-sm backdrop-blur">
-          {expiresIn === 0
-            ? "Expires today"
-            : `Expires in ${expiresIn} ${expiresIn === 1 ? "day" : "days"}`}
+          {expiresIn}
         </div>
         <div className="border-t border-[#232832] px-4 py-3">
           <p className="truncate text-sm font-semibold text-[#f3f4f6]">{creation.name}</p>
@@ -269,7 +267,7 @@ export default function CreationsCarousel({
             Bring a creation forward
           </h2>
           <p className="mt-1 text-xs text-[#94a3b8]">
-            Saved on this device for seven days.
+            Saved to your studio session and cached on this device.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -318,7 +316,7 @@ export default function CreationsCarousel({
           </span>
           <p className="mt-4 text-sm font-semibold text-[#505747]">No saved creations yet</p>
           <p className="mt-2 max-w-sm text-xs leading-5 text-[#92958d]">
-            Generated GLB models will appear here automatically and remain available on this device for seven days.
+            Generated GLB models are saved to your studio session and kept in a local cache for fast preview.
           </p>
         </div>
       ) : (
@@ -339,11 +337,7 @@ export default function CreationsCarousel({
                   <CreationViewport modelUrl={activeCreation.modelUrl} animated />
                 </div>
                 <div className="absolute left-3 top-3 rounded-full border border-white/10 bg-black/50 px-2.5 py-1 font-mono text-[9px] text-white shadow-sm backdrop-blur">
-                  {activeExpiresIn === 0
-                    ? "Expires today"
-                    : `Expires in ${activeExpiresIn} ${
-                        activeExpiresIn === 1 ? "day" : "days"
-                      }`}
+                  {activeExpiresIn}
                 </div>
                 <div className="border-t border-[#232832] px-4 py-3">
                   <p className="truncate text-sm font-semibold text-[#f3f4f6]">

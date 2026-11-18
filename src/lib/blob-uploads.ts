@@ -11,7 +11,8 @@ export const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
 export const MAX_MODEL_SIZE = 100 * 1024 * 1024;
 export const UPLOAD_SESSION_TTL_MS = 10 * 60 * 1000;
 
-export type UploadKind = "image" | "model";
+export type UploadKind = "image" | "model" | "creation";
+export const CREATION_THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024;
 
 type UploadSession = {
   sid: string;
@@ -72,21 +73,29 @@ export function createUploadSession(
     throw new MeshyApiError("Upload authorization requires a studio session.", 401);
   }
 
-  const maximumCount = kind === "image" ? 4 : 1;
+  const maximumCount = kind === "image" ? 4 : kind === "creation" ? 2 : 1;
   const allowedTypes =
     kind === "image"
       ? new Set(["image/jpeg", "image/png", "image/webp"])
-      : new Set(["model/gltf-binary", "application/octet-stream"]);
+      : kind === "creation"
+        ? new Set(["model/gltf-binary", "application/octet-stream", "image/png"])
+        : new Set(["model/gltf-binary", "application/octet-stream"]);
   const maximumSize = kind === "image" ? MAX_IMAGE_SIZE : MAX_MODEL_SIZE;
+  const creationModelCount = files.filter(
+    (file) => file.contentType === "model/gltf-binary" || file.contentType === "application/octet-stream",
+  ).length;
   if (
     files.length < 1 ||
     files.length > maximumCount ||
+    (kind === "creation" && (creationModelCount !== 1 || files.length > 2)) ||
     files.some(
       (file) =>
         !allowedTypes.has(file.contentType) ||
         !Number.isSafeInteger(file.size) ||
         file.size <= 0 ||
-        file.size > maximumSize,
+        file.size > (file.contentType === "image/png" && kind === "creation"
+          ? CREATION_THUMBNAIL_MAX_BYTES
+          : maximumSize),
     )
   ) {
     throw new MeshyApiError("The requested uploads have an invalid type, size, or count.", 400);
@@ -95,14 +104,14 @@ export function createUploadSession(
   const sessionId = randomUUID();
   const pathnames = files.map((file) => {
     const extension =
-      kind === "model"
+      kind === "model" || file.contentType === "model/gltf-binary" || file.contentType === "application/octet-stream"
         ? "glb"
         : file.contentType === "image/jpeg"
           ? "jpg"
           : file.contentType === "image/webp"
             ? "webp"
             : "png";
-    return `${getUploadPrefix(kind, sessionId)}${randomUUID()}.${extension}`;
+    return `${getUploadPrefix(kind, sessionId, userId)}${randomUUID()}.${extension}`;
   });
   const session: UploadSession = {
     sid: sessionId,
@@ -134,13 +143,18 @@ export function verifyUploadSession(userId: string, token: string): UploadSessio
       typeof session.userId !== "string" ||
       !isStudioUserId(session.userId) ||
       session.userId !== userId ||
-      (session.kind !== "image" && session.kind !== "model") ||
+      (session.kind !== "image" && session.kind !== "model" && session.kind !== "creation") ||
       !Array.isArray(session.pathnames) ||
       session.pathnames.length < 1 ||
       session.pathnames.some(
         (pathname) =>
           typeof pathname !== "string" ||
-          !isAllowedUploadPath(pathname, session.kind as UploadKind, session.sid as string),
+          !isAllowedUploadPath(
+            pathname,
+            session.kind as UploadKind,
+            session.sid as string,
+            session.userId,
+          ),
       ) ||
       typeof session.exp !== "number" ||
       session.exp <= Date.now()
@@ -153,7 +167,8 @@ export function verifyUploadSession(userId: string, token: string): UploadSessio
   }
 }
 
-export function getUploadPrefix(kind: UploadKind, sessionId: string): string {
+export function getUploadPrefix(kind: UploadKind, sessionId: string, userId?: string): string {
+  if (kind === "creation") return `creations/${userId}/${sessionId}/`;
   const root = kind === "image" ? IMAGE_UPLOAD_PREFIX : MODEL_UPLOAD_PREFIX;
   return `${root}/${sessionId}/`;
 }
@@ -162,14 +177,15 @@ export function isAllowedUploadPath(
   pathname: string,
   kind: UploadKind,
   sessionId: string,
+  userId?: string,
 ): boolean {
-  const prefix = getUploadPrefix(kind, sessionId);
+  const prefix = getUploadPrefix(kind, sessionId, userId);
   if (!pathname.startsWith(prefix) || pathname.includes("..")) return false;
   const filename = pathname.slice(prefix.length);
   if (!filename || filename.includes("/")) return false;
-  return kind === "image"
-    ? /\.(?:jpe?g|png|webp)$/i.test(filename)
-    : /\.glb$/i.test(filename);
+  if (kind === "image") return /\.(?:jpe?g|png|webp)$/i.test(filename);
+  if (kind === "creation") return /\.(?:glb|png)$/i.test(filename);
+  return /\.glb$/i.test(filename);
 }
 
 function isPublicBlobUrl(value: string): boolean {
@@ -193,10 +209,14 @@ export async function validateUploadedBlobs(input: {
   const session = verifyUploadSession(input.userId, input.authorization);
   if (!session) throw new MeshyApiError("The upload authorization is invalid or expired.", 403);
 
-  const maximumCount = input.kind === "image" ? 4 : 1;
+  const maximumCount = input.kind === "image" ? 4 : input.kind === "creation" ? 2 : 1;
   if (input.urls.length < 1 || input.urls.length > maximumCount) {
     throw new MeshyApiError(
-      input.kind === "image" ? "Provide one to four uploaded images." : "Provide one uploaded GLB.",
+      input.kind === "image"
+        ? "Provide one to four uploaded images."
+        : input.kind === "creation"
+          ? "Provide the creation model and an optional thumbnail."
+          : "Provide one uploaded GLB.",
       400,
     );
   }
@@ -204,7 +224,9 @@ export async function validateUploadedBlobs(input: {
   const expectedTypes =
     input.kind === "image"
       ? new Set(["image/jpeg", "image/png", "image/webp"])
-      : new Set(["model/gltf-binary", "application/octet-stream"]);
+      : input.kind === "creation"
+        ? new Set(["model/gltf-binary", "application/octet-stream", "image/png"])
+        : new Set(["model/gltf-binary", "application/octet-stream"]);
   const maximumSize = input.kind === "image" ? MAX_IMAGE_SIZE : MAX_MODEL_SIZE;
   const validated: string[] = [];
 
@@ -227,7 +249,9 @@ export async function validateUploadedBlobs(input: {
     if (
       !session.pathnames.includes(metadata.pathname) ||
       metadata.size <= 0 ||
-      metadata.size > maximumSize ||
+      metadata.size > (metadata.contentType === "image/png" && input.kind === "creation"
+        ? CREATION_THUMBNAIL_MAX_BYTES
+        : maximumSize) ||
       !expectedTypes.has(metadata.contentType)
     ) {
       throw new MeshyApiError("An uploaded file has an invalid type or size.", 415);

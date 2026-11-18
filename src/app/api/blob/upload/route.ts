@@ -25,7 +25,7 @@ function parseClientPayload(value: string | null): ClientPayload | null {
     if (
       !isRecord(payload) ||
       typeof payload.authorization !== "string" ||
-      (payload.kind !== "image" && payload.kind !== "model")
+      (payload.kind !== "image" && payload.kind !== "model" && payload.kind !== "creation")
     ) {
       return null;
     }
@@ -67,10 +67,10 @@ export async function POST(request: Request) {
         if (
           session.kind !== payload.kind ||
           !session.pathnames.includes(pathname) ||
-          !isAllowedUploadPath(pathname, payload.kind, session.sid)
+          !isAllowedUploadPath(pathname, payload.kind, session.sid, session.userId)
         ) {
           throw new MeshyApiError(
-            `Uploads must use the ${getUploadPrefix(payload.kind, session.sid)} prefix.`,
+            `Uploads must use the ${getUploadPrefix(payload.kind, session.sid, session.userId)} prefix.`,
             403,
           );
         }
@@ -93,14 +93,20 @@ export async function POST(request: Request) {
           allowedContentTypes:
             payload.kind === "image"
               ? ["image/jpeg", "image/png", "image/webp"]
-              : ["model/gltf-binary", "application/octet-stream"],
+              : payload.kind === "creation"
+                ? ["model/gltf-binary", "application/octet-stream", "image/png"]
+                : ["model/gltf-binary", "application/octet-stream"],
           maximumSizeInBytes:
-            payload.kind === "image" ? MAX_IMAGE_SIZE : MAX_MODEL_SIZE,
+            payload.kind === "creation" && pathname.endsWith(".png")
+              ? 2 * 1024 * 1024
+              : payload.kind === "image"
+                ? MAX_IMAGE_SIZE
+                : MAX_MODEL_SIZE,
           validUntil: Math.min(session.exp, Date.now() + 5 * 60 * 1000),
           addRandomSuffix: false,
           allowOverwrite: false,
           cacheControlMaxAge: 60,
-          ttlDays: 1,
+          ...(payload.kind === "creation" ? {} : { ttlDays: 1 }),
           tokenPayload: JSON.stringify({
             sid: session.sid,
             kind: payload.kind,

@@ -21,7 +21,7 @@ export async function POST(request: Request) {
   }
   if (
     !isRecord(body) ||
-    (body.kind !== "image" && body.kind !== "model") ||
+    (body.kind !== "image" && body.kind !== "model" && body.kind !== "creation") ||
     !Array.isArray(body.files) ||
     body.files.some(
       (file) =>

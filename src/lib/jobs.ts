@@ -98,6 +98,20 @@ const SCHEMA_STATEMENTS = [
   )`,
   `CREATE INDEX IF NOT EXISTS request_rates_lookup_idx
     ON request_rates (user_id, action, created_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS creations (
+    id text PRIMARY KEY,
+    user_id text NOT NULL,
+    name text NOT NULL,
+    model_url text NOT NULL,
+    thumbnail_url text,
+    width double precision NOT NULL,
+    depth double precision NOT NULL,
+    height double precision NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`,
+  `CREATE INDEX IF NOT EXISTS creations_user_created_idx
+    ON creations (user_id, created_at DESC)`,
 ];
 
 export const MAX_ACTIVE_JOBS = 2;
@@ -117,6 +131,10 @@ function databaseUrl(): string {
     throw new Error("DATABASE_URL is not configured.");
   }
   return url;
+}
+
+export function getDatabasePool(): Pool {
+  return getPool();
 }
 
 function getPool(): Pool {
