@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { deleteExpiredTemporaryBlobs } from "@/lib/blob-uploads";
+import { deleteExpiredRateLimits } from "@/lib/jobs";
 
 export async function GET(request: Request) {
   const secret = process.env.CRON_SECRET;
@@ -11,7 +12,8 @@ export async function GET(request: Request) {
     const deleted = await deleteExpiredTemporaryBlobs(
       new Date(Date.now() - 24 * 60 * 60 * 1000),
     );
-    return NextResponse.json({ deleted });
+    const expiredRateEvents = await deleteExpiredRateLimits();
+    return NextResponse.json({ deleted, expiredRateEvents });
   } catch (error) {
     console.error("Scheduled temporary Blob cleanup failed.", error);
     return NextResponse.json({ error: "Blob cleanup failed." }, { status: 500 });

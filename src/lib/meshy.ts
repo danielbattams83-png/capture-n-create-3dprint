@@ -7,6 +7,7 @@ export class MeshyApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly retryAfterSeconds?: number,
   ) {
     super(message);
     this.name = "MeshyApiError";

@@ -6,7 +6,7 @@ import {
   readTaskToken,
 } from "@/lib/meshy";
 import { getRetextureTask } from "@/lib/meshyService";
-import { deleteTemporaryBlobs } from "@/lib/blob-uploads";
+import { syncJobFromMeshy } from "@/lib/jobs";
 
 export async function POST(request: Request) {
   if (!isSameOrigin(request)) {
@@ -43,13 +43,18 @@ export async function POST(request: Request) {
 
   try {
     const task = await getRetextureTask(taskId);
-    if (
-      task.status === "SUCCEEDED" ||
-      task.status === "FAILED" ||
-      task.status === "CANCELED"
-    ) {
-      await deleteTemporaryBlobs(token.blobUrls);
-    }
+    await syncJobFromMeshy({
+      meshyTaskId: task.id,
+      status:
+        task.status === "SUCCEEDED"
+          ? "succeeded"
+          : task.status === "FAILED" || task.status === "CANCELED"
+            ? "failed"
+            : "processing",
+      progress: task.progress,
+      outputUrls: task.modelUrl ? { glb: task.modelUrl } : null,
+      error: task.error ?? null,
+    });
     return NextResponse.json({
       task_id: task.id,
       status: task.status,

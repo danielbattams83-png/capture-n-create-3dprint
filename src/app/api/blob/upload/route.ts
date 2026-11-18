@@ -1,7 +1,6 @@
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { NextResponse } from "next/server";
 import {
-  checkRateLimit,
   getBlobReadWriteToken,
   getUploadPrefix,
   isAllowedUploadPath,
@@ -10,7 +9,9 @@ import {
   verifyUploadSession,
   type UploadKind,
 } from "@/lib/blob-uploads";
-import { isRecord, isSameOrigin } from "@/lib/meshy";
+import { consumeRateLimit } from "@/lib/jobs";
+import { isRecord, isSameOrigin, MeshyApiError } from "@/lib/meshy";
+import { readStudioSession } from "@/lib/session";
 
 type ClientPayload = {
   authorization: string;
@@ -52,26 +53,40 @@ export async function POST(request: Request) {
       body,
       token: getBlobReadWriteToken(),
       onBeforeGenerateToken: async (pathname, clientPayload) => {
+        const studio = readStudioSession(request);
+        if (studio.isNew) {
+          throw new MeshyApiError("Upload authorization requires a studio session.", 401);
+        }
         const payload = parseClientPayload(clientPayload);
         const session = payload
-          ? verifyUploadSession(request, payload.authorization)
+          ? verifyUploadSession(studio.userId, payload.authorization)
           : null;
         if (!payload || !session) {
-          throw new Error("Upload authorization is invalid or expired.");
+          throw new MeshyApiError("Upload authorization is invalid or expired.", 403);
         }
         if (
           session.kind !== payload.kind ||
           !session.pathnames.includes(pathname) ||
           !isAllowedUploadPath(pathname, payload.kind, session.sid)
         ) {
-          throw new Error(
+          throw new MeshyApiError(
             `Uploads must use the ${getUploadPrefix(payload.kind, session.sid)} prefix.`,
+            403,
           );
         }
 
-        const rateLimit = checkRateLimit(`blob-token:${session.sid}`, 8, 10 * 60 * 1000);
+        const rateLimit = await consumeRateLimit({
+          userId: studio.userId,
+          action: `blob-token:${session.sid}`,
+          limit: 8,
+          windowMs: 10 * 60 * 1000,
+        });
         if (!rateLimit.allowed) {
-          throw new Error("This upload session has reached its file limit.");
+          throw new MeshyApiError(
+            "This upload session has reached its file limit.",
+            429,
+            rateLimit.retryAfterSeconds,
+          );
         }
 
         return {
@@ -96,9 +111,16 @@ export async function POST(request: Request) {
     return NextResponse.json(result);
   } catch (error) {
     console.error("Blob upload authorization failed.", error);
+    const status = error instanceof MeshyApiError ? error.status : 400;
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unable to authorize this upload." },
-      { status: 400 },
+      {
+        status,
+        headers:
+          error instanceof MeshyApiError && error.retryAfterSeconds
+            ? { "Retry-After": String(error.retryAfterSeconds) }
+            : undefined,
+      },
     );
   }
 }

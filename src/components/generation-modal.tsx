@@ -16,6 +16,7 @@ export type GenerationModalStatus =
   | "idle"
   | "uploading"
   | "generating"
+  | "reconnecting"
   | "ready"
   | "error";
 
@@ -35,7 +36,9 @@ type GenerationModalProps = {
   modelUrls: { glb?: string; stl?: string } | null;
   exportReady: boolean;
   onClose: () => void;
-  onRetry: () => void;
+  canResume: boolean;
+  onResume: () => void;
+  onGenerateAgain: () => void;
   onExport: () => void;
   onViewModel: () => void;
 };
@@ -57,17 +60,19 @@ export default function GenerationModal({
   modelUrls,
   exportReady,
   onClose,
-  onRetry,
+  canResume,
+  onResume,
+  onGenerateAgain,
   onExport,
   onViewModel,
 }: GenerationModalProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const isProcessing = status === "uploading" || status === "generating";
+  const isProcessing = status === "uploading" || status === "generating" || status === "reconnecting";
   const currentStageIndex =
     status === "uploading"
       ? 0
-      : status === "generating"
+      : status === "generating" || status === "reconnecting"
         ? 1
         : status === "error"
           ? failedStage === "generating"
@@ -187,12 +192,13 @@ export default function GenerationModal({
                 <p className="mt-1 text-xs text-[#9ca3af]" role="status" aria-live="polite">
                   {status === "uploading" && "Sending your photos securely…"}
                   {status === "generating" && `Generating your model… ${progress}%`}
+                  {status === "reconnecting" && "Reconnecting…"}
                   {status === "ready" && "Your model is ready to preview and download."}
                   {status === "error" && "The last attempt did not complete."}
                   {status === "idle" && "Preparing your photos…"}
                 </p>
               </div>
-              {status === "generating" && (
+              {(status === "generating" || status === "reconnecting") && (
                 <span className="font-mono text-lg tabular-nums text-[#60a5fa]">
                   {progress}%
                 </span>
@@ -292,7 +298,7 @@ export default function GenerationModal({
         </div>
 
         <div className="flex flex-col-reverse gap-2 border-t border-[#232832] bg-[#101318] px-5 py-4 sm:flex-row sm:justify-end sm:px-7">
-          {status === "error" ? (
+          {status === "error" || status === "reconnecting" ? (
             <>
               <button
                 type="button"
@@ -303,11 +309,20 @@ export default function GenerationModal({
               </button>
               <button
                 type="button"
-                onClick={onRetry}
-                className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#2563eb] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#1d4ed8]"
+                onClick={onResume}
+                disabled={!canResume}
+                className="rounded-lg border border-[#3b82f6]/50 px-4 py-2.5 text-sm font-semibold text-[#bfdbfe] transition hover:bg-[#1b2029] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Resume
+              </button>
+              <button
+                type="button"
+                onClick={onGenerateAgain}
+                disabled={images.length === 0}
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#2563eb] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Sparkles aria-hidden="true" className="size-4" />
-                Try again
+                Generate again
               </button>
             </>
           ) : status === "ready" ? (

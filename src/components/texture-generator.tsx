@@ -4,10 +4,26 @@ import Image from "next/image";
 import { Check, ImageIcon, LoaderCircle, Paintbrush, Sparkles } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { uploadTemporaryFiles } from "@/lib/client-blob-upload";
+import {
+  isTransientRequestFailure,
+  reconnectDelayMs,
+  waitForPoll,
+} from "@/lib/resilient-poll";
 
 type TextureSourceImage = {
   file: File;
   previewUrl: string;
+};
+
+export type ResumedTextureJob = {
+  taskId: string;
+  taskToken: string;
+  progress: number;
+};
+
+type TextureCredentials = {
+  task_id: string;
+  task_token: string;
 };
 
 type TextureGeneratorProps = {
@@ -18,12 +34,13 @@ type TextureGeneratorProps = {
     taskType: "image-to-3d" | "multi-image-to-3d";
     taskToken: string;
   };
+  resumedJob?: ResumedTextureJob | null;
   onTextureReady: (model: Blob) => void | Promise<void>;
 };
 
 type TextureMode = "prompt" | "photo";
 
-type TextureStatus = "idle" | "submitting" | "generating" | "applying" | "done" | "error";
+type TextureStatus = "idle" | "submitting" | "generating" | "reconnecting" | "applying" | "done" | "error";
 
 const STYLE_PRESETS = [
   { value: "realistic", label: "Realistic PBR" },
@@ -53,24 +70,12 @@ async function readJson(response: Response): Promise<unknown> {
   }
 }
 
-function wait(milliseconds: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timeout = window.setTimeout(resolve, milliseconds);
-    signal.addEventListener(
-      "abort",
-      () => {
-        window.clearTimeout(timeout);
-        reject(new DOMException("Texture generation canceled.", "AbortError"));
-      },
-      { once: true },
-    );
-  });
-}
 
 export default function TextureGenerator({
   model,
   sourceImages = [],
   sourceTask,
+  resumedJob = null,
   onTextureReady,
 }: TextureGeneratorProps) {
   const [mode, setMode] = useState<TextureMode>("prompt");
@@ -79,13 +84,184 @@ export default function TextureGenerator({
   const [status, setStatus] = useState<TextureStatus>("idle");
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState("");
+  const [canResume, setCanResume] = useState(false);
   const activeRequest = useRef<AbortController | null>(null);
+  const credentials = useRef<TextureCredentials | null>(null);
 
   useEffect(() => {
     return () => activeRequest.current?.abort();
   }, []);
 
-  const generateTexture = async () => {
+  const rememberCredentials = (next: TextureCredentials) => {
+    credentials.current = next;
+    setCanResume(true);
+  };
+
+  const pollTexture = async (
+    nextCredentials: TextureCredentials,
+    controller: AbortController,
+  ) => {
+    setStatus("generating");
+    let transientAttempts = 0;
+    for (let attempt = 0; attempt < 720; ) {
+      const delay = transientAttempts > 0 ? reconnectDelayMs(transientAttempts) : attempt === 0 ? 0 : 5000;
+      if (delay > 0) await waitForPoll(delay, controller.signal);
+
+      let statusResponse: Response;
+      try {
+        statusResponse = await fetch("/api/meshy-texture/status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(nextCredentials),
+          signal: controller.signal,
+        });
+      } catch (pollError) {
+        if (controller.signal.aborted || !isTransientRequestFailure(pollError)) throw pollError;
+        transientAttempts += 1;
+        setStatus("reconnecting");
+        continue;
+      }
+
+      const statusResult = await readJson(statusResponse);
+      if (!statusResponse.ok) {
+        if (isTransientRequestFailure(null, statusResponse.status)) {
+          transientAttempts += 1;
+          setStatus("reconnecting");
+          continue;
+        }
+        throw new Error(
+          getResponseError(statusResult) ?? "Texture progress could not be checked.",
+        );
+      }
+      if (
+        typeof statusResult !== "object" ||
+        statusResult === null ||
+        !("status" in statusResult) ||
+        typeof statusResult.status !== "string"
+      ) {
+        throw new Error("The texture service returned an invalid task status.");
+      }
+
+      transientAttempts = 0;
+      setStatus((current) => (current === "reconnecting" ? "generating" : current));
+      const nextProgress =
+        "progress" in statusResult && typeof statusResult.progress === "number"
+          ? Math.min(100, Math.max(0, statusResult.progress))
+          : 0;
+      setProgress(nextProgress);
+
+      if (statusResult.status === "FAILED" || statusResult.status === "CANCELED") {
+        throw new Error(
+          getResponseError(statusResult) ??
+            (statusResult.status === "CANCELED"
+              ? "Texture generation was canceled."
+              : "The texture could not be generated."),
+        );
+      }
+      if (statusResult.status !== "SUCCEEDED") {
+        attempt += 1;
+        continue;
+      }
+
+      setStatus("applying");
+      setProgress(100);
+      let modelResponse: Response;
+      try {
+        modelResponse = await fetch("/api/meshy-texture/model", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(nextCredentials),
+          signal: controller.signal,
+        });
+      } catch (downloadError) {
+        if (controller.signal.aborted || !isTransientRequestFailure(downloadError)) throw downloadError;
+        transientAttempts += 1;
+        setStatus("reconnecting");
+        continue;
+      }
+      if (!modelResponse.ok) {
+        if (isTransientRequestFailure(null, modelResponse.status)) {
+          transientAttempts += 1;
+          setStatus("reconnecting");
+          continue;
+        }
+        const modelError = await readJson(modelResponse);
+        throw new Error(
+          getResponseError(modelError) ?? "The textured model could not be downloaded.",
+        );
+      }
+      const texturedModel = await modelResponse.blob();
+      if (texturedModel.size === 0) {
+        throw new Error("The texture service returned an empty model.");
+      }
+      await onTextureReady(texturedModel);
+      setStatus("done");
+      return;
+    }
+
+    throw new Error(
+      "Texture generation is still running after one hour. Resume to keep checking the same task.",
+    );
+  };
+
+  const resumeTexture = async () => {
+    const existing = credentials.current;
+    if (!existing) return;
+    activeRequest.current?.abort();
+    const controller = new AbortController();
+    activeRequest.current = controller;
+    setError("");
+    try {
+      await pollTexture(existing, controller);
+    } catch (generationError) {
+      if (generationError instanceof Error && generationError.name === "AbortError") return;
+      setError(
+        generationError instanceof Error
+          ? generationError.message
+          : "Texture generation failed.",
+      );
+      setStatus("error");
+    } finally {
+      if (activeRequest.current === controller) activeRequest.current = null;
+    }
+  };
+
+  const resumedTaskId = resumedJob?.taskId ?? null;
+  useEffect(() => {
+    if (!resumedJob || !resumedTaskId) return;
+    const controller = new AbortController();
+    activeRequest.current = controller;
+    const nextCredentials = {
+      task_id: resumedJob.taskId,
+      task_token: resumedJob.taskToken,
+    };
+    const startingProgress = resumedJob.progress;
+    credentials.current = nextCredentials;
+    void (async () => {
+      try {
+        await waitForPoll(0, controller.signal);
+        setCanResume(true);
+        setProgress(startingProgress);
+        setError("");
+        await pollTexture(nextCredentials, controller);
+      } catch (generationError) {
+        if (controller.signal.aborted) return;
+        setError(
+          generationError instanceof Error
+            ? generationError.message
+            : "Texture generation failed.",
+        );
+        setStatus("error");
+      } finally {
+        if (activeRequest.current === controller) activeRequest.current = null;
+      }
+    })();
+    return () => controller.abort();
+    // The persisted task id is the only resume trigger. Generate again starts its own request.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resumedTaskId]);
+
+  const generateTexture = async (force = false) => {
     const trimmedPrompt = prompt.trim();
     const usingPhoto = mode === "photo";
     if (usingPhoto ? sourceImages.length === 0 : !trimmedPrompt) return;
@@ -125,23 +301,42 @@ export default function TextureGenerator({
             upload_authorization: uploaded.authorization,
           }));
 
-      const createResponse = await fetch("/api/meshy-texture", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...modelSource,
-          ...(photoUpload
-            ? {
-                image_urls: photoUpload.urls,
-                image_upload_authorization: photoUpload.authorization,
-              }
-            : {
-                prompt: trimmedPrompt,
-                style_preset: stylePreset,
-              }),
-        }),
-        signal: controller.signal,
-      });
+      const requestBody = {
+        ...modelSource,
+        ...(photoUpload
+          ? {
+              image_urls: photoUpload.urls,
+              image_upload_authorization: photoUpload.authorization,
+            }
+          : {
+              prompt: trimmedPrompt,
+              style_preset: stylePreset,
+            }),
+        ...(force ? { idempotency_nonce: crypto.randomUUID() } : {}),
+      };
+
+      let createResponse: Response | null = null;
+      let transientAttempts = 0;
+      while (!createResponse || (!createResponse.ok && createResponse.status >= 500)) {
+        if (createResponse) {
+          transientAttempts += 1;
+          setStatus("reconnecting");
+          await waitForPoll(reconnectDelayMs(transientAttempts), controller.signal);
+        }
+        try {
+          createResponse = await fetch("/api/meshy-texture", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(requestBody),
+            signal: controller.signal,
+          });
+        } catch (createError) {
+          if (controller.signal.aborted || !isTransientRequestFailure(createError)) throw createError;
+          transientAttempts += 1;
+          setStatus("reconnecting");
+          await waitForPoll(reconnectDelayMs(transientAttempts), controller.signal);
+        }
+      }
       const createResult = await readJson(createResponse);
       if (!createResponse.ok) {
         throw new Error(
@@ -159,78 +354,11 @@ export default function TextureGenerator({
         throw new Error("The texture service returned invalid task credentials.");
       }
 
-      const credentials = {
+      rememberCredentials({
         task_id: createResult.task_id,
         task_token: createResult.task_token,
-      };
-      setStatus("generating");
-
-      for (let attempt = 0; attempt < 720; attempt += 1) {
-        if (attempt > 0) await wait(5000, controller.signal);
-        const statusResponse = await fetch("/api/meshy-texture/status", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(credentials),
-          signal: controller.signal,
-        });
-        const statusResult = await readJson(statusResponse);
-        if (!statusResponse.ok) {
-          if (statusResponse.status >= 500) continue;
-          throw new Error(
-            getResponseError(statusResult) ?? "Texture progress could not be checked.",
-          );
-        }
-        if (
-          typeof statusResult !== "object" ||
-          statusResult === null ||
-          !("status" in statusResult) ||
-          typeof statusResult.status !== "string"
-        ) {
-          throw new Error("The texture service returned an invalid task status.");
-        }
-
-        const nextProgress =
-          "progress" in statusResult && typeof statusResult.progress === "number"
-            ? Math.min(100, Math.max(0, statusResult.progress))
-            : 0;
-        setProgress(nextProgress);
-
-        if (statusResult.status === "FAILED" || statusResult.status === "CANCELED") {
-          throw new Error(
-            getResponseError(statusResult) ??
-              (statusResult.status === "CANCELED"
-                ? "Texture generation was canceled."
-                : "The texture could not be generated."),
-          );
-        }
-        if (statusResult.status !== "SUCCEEDED") continue;
-
-        setStatus("applying");
-        setProgress(100);
-        const modelResponse = await fetch("/api/meshy-texture/model", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(credentials),
-          signal: controller.signal,
-        });
-        if (!modelResponse.ok) {
-          const modelError = await readJson(modelResponse);
-          throw new Error(
-            getResponseError(modelError) ?? "The textured model could not be downloaded.",
-          );
-        }
-        const texturedModel = await modelResponse.blob();
-        if (texturedModel.size === 0) {
-          throw new Error("The texture service returned an empty model.");
-        }
-        await onTextureReady(texturedModel);
-        setStatus("done");
-        return;
-      }
-
-      throw new Error(
-        "Texture generation is still running after one hour. Keep the task ID and check it again later.",
-      );
+      });
+      await pollTexture(credentials.current!, controller);
     } catch (generationError) {
       if (generationError instanceof Error && generationError.name === "AbortError") return;
       setError(
@@ -245,7 +373,10 @@ export default function TextureGenerator({
   };
 
   const busy =
-    status === "submitting" || status === "generating" || status === "applying";
+    status === "submitting" ||
+    status === "generating" ||
+    status === "reconnecting" ||
+    status === "applying";
 
   return (
     <section
@@ -379,7 +510,7 @@ export default function TextureGenerator({
         )}
         <button
           type="button"
-          onClick={() => void generateTexture()}
+          onClick={() => void generateTexture(status === "done")}
           disabled={busy || (mode === "photo" ? sourceImages.length === 0 : !prompt.trim())}
           className="flex h-11 items-center justify-center gap-2 rounded-xl bg-[#2563eb] px-5 text-sm font-semibold text-white transition hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:bg-[#303946] disabled:text-[#8993a0]"
         >
@@ -392,8 +523,10 @@ export default function TextureGenerator({
           )}
           {status === "submitting"
             ? "Starting…"
-            : status === "generating"
-              ? "Generating…"
+              : status === "reconnecting"
+                ? "Reconnecting…"
+              : status === "generating"
+                ? "Generating…"
               : status === "applying"
                 ? "Applying…"
                 : status === "done"
@@ -410,7 +543,9 @@ export default function TextureGenerator({
         <div className="mt-4" role="status" aria-live="polite">
           <div className="mb-2 flex items-center justify-between text-[11px] text-[#aeb6c0]">
             <span>
-              {status === "submitting"
+              {status === "reconnecting"
+                ? "Reconnecting…"
+                : status === "submitting"
                 ? mode === "photo"
                   ? sourceTask
                     ? "Uploading photos…"
@@ -437,6 +572,25 @@ export default function TextureGenerator({
         <p className="mt-3 text-xs font-medium text-[#86efac]" role="status">
           Texture applied to the active model.
         </p>
+      )}
+      {(status === "error" || status === "reconnecting") && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => void resumeTexture()}
+            disabled={!canResume}
+            className="rounded-lg border border-[#3b82f6]/50 px-3 py-2 text-xs font-semibold text-[#bfdbfe] transition hover:bg-[#1b2029] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Resume
+          </button>
+          <button
+            type="button"
+            onClick={() => void generateTexture(true)}
+            className="rounded-lg bg-[#2563eb] px-3 py-2 text-xs font-semibold text-white transition hover:bg-[#1d4ed8]"
+          >
+            Generate again
+          </button>
+        </div>
       )}
       {error && (
         <p className="mt-3 text-xs font-medium leading-5 text-[#fda4af]" role="alert">

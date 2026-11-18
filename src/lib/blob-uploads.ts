@@ -1,8 +1,9 @@
 import "server-only";
 
-import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { del, head, list } from "@vercel/blob";
 import { MeshyApiError } from "@/lib/meshy";
+import { isStudioUserId } from "@/lib/session";
 
 export const IMAGE_UPLOAD_PREFIX = "temp/meshy/images";
 export const MODEL_UPLOAD_PREFIX = "temp/meshy/models";
@@ -14,18 +15,11 @@ export type UploadKind = "image" | "model";
 
 type UploadSession = {
   sid: string;
-  ip: string;
+  userId: string;
   kind: UploadKind;
   pathnames: string[];
   exp: number;
 };
-
-type RateLimitEntry = {
-  count: number;
-  resetAt: number;
-};
-
-const rateLimits = new Map<string, RateLimitEntry>();
 
 export function getBlobReadWriteToken(): string | undefined {
   return (
@@ -64,44 +58,8 @@ function safeEqual(left: string, right: string): boolean {
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
 }
 
-function getClientAddress(request: Request): string {
-  return (
-    request.headers.get("x-vercel-forwarded-for")?.split(",")[0]?.trim() ||
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    "local"
-  );
-}
-
-function hashClientAddress(request: Request): string {
-  return createHash("sha256")
-    .update(`${getSigningSecret()}:${getClientAddress(request)}`)
-    .digest("base64url")
-    .slice(0, 24);
-}
-
-export function checkRateLimit(
-  key: string,
-  limit: number,
-  windowMs: number,
-): { allowed: boolean; retryAfterSeconds: number } {
-  const now = Date.now();
-  const current = rateLimits.get(key);
-  if (!current || current.resetAt <= now) {
-    rateLimits.set(key, { count: 1, resetAt: now + windowMs });
-    return { allowed: true, retryAfterSeconds: 0 };
-  }
-  if (current.count >= limit) {
-    return {
-      allowed: false,
-      retryAfterSeconds: Math.max(1, Math.ceil((current.resetAt - now) / 1000)),
-    };
-  }
-  current.count += 1;
-  return { allowed: true, retryAfterSeconds: 0 };
-}
-
 export function createUploadSession(
-  request: Request,
+  userId: string,
   kind: UploadKind,
   files: { contentType: string; size: number }[],
 ): {
@@ -110,6 +68,10 @@ export function createUploadSession(
   pathnames: string[];
   expiresAt: number;
 } {
+  if (!isStudioUserId(userId)) {
+    throw new MeshyApiError("Upload authorization requires a studio session.", 401);
+  }
+
   const maximumCount = kind === "image" ? 4 : 1;
   const allowedTypes =
     kind === "image"
@@ -144,7 +106,7 @@ export function createUploadSession(
   });
   const session: UploadSession = {
     sid: sessionId,
-    ip: hashClientAddress(request),
+    userId,
     kind,
     pathnames,
     exp: Date.now() + UPLOAD_SESSION_TTL_MS,
@@ -158,7 +120,7 @@ export function createUploadSession(
   };
 }
 
-export function verifyUploadSession(request: Request, token: string): UploadSession | null {
+export function verifyUploadSession(userId: string, token: string): UploadSession | null {
   const [payload, signature, extra] = token.split(".");
   if (!payload || !signature || extra || !safeEqual(sign(payload), signature)) return null;
 
@@ -169,8 +131,9 @@ export function verifyUploadSession(request: Request, token: string): UploadSess
     if (
       typeof session.sid !== "string" ||
       !/^[\da-f-]{36}$/i.test(session.sid) ||
-      typeof session.ip !== "string" ||
-      session.ip !== hashClientAddress(request) ||
+      typeof session.userId !== "string" ||
+      !isStudioUserId(session.userId) ||
+      session.userId !== userId ||
       (session.kind !== "image" && session.kind !== "model") ||
       !Array.isArray(session.pathnames) ||
       session.pathnames.length < 1 ||
@@ -222,12 +185,12 @@ function isPublicBlobUrl(value: string): boolean {
 }
 
 export async function validateUploadedBlobs(input: {
-  request: Request;
+  userId: string;
   authorization: string;
   urls: string[];
   kind: UploadKind;
 }): Promise<string[]> {
-  const session = verifyUploadSession(input.request, input.authorization);
+  const session = verifyUploadSession(input.userId, input.authorization);
   if (!session) throw new MeshyApiError("The upload authorization is invalid or expired.", 403);
 
   const maximumCount = input.kind === "image" ? 4 : 1;

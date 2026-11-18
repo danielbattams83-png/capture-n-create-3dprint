@@ -13,6 +13,12 @@ import ImagePreprocessingModal from "@/components/image-preprocessing-modal";
 import type { ProcessedImageReview } from "@/components/image-preprocessing-modal";
 import TextureGenerator from "@/components/texture-generator";
 import { uploadTemporaryFiles } from "@/lib/client-blob-upload";
+import {
+  isTransientRequestFailure,
+  reconnectDelayMs,
+  waitForPoll,
+} from "@/lib/resilient-poll";
+import type { ResumedTextureJob } from "@/components/texture-generator";
 import { isolateAndCropSubject } from "@/lib/image-preprocessing";
 import { fetchKhronosAssets, type KhronosAsset } from "@/lib/khronos-assets";
 import {
@@ -32,7 +38,7 @@ const ModelViewer = dynamic(() => import("@/components/model-viewer"), {
   ),
 });
 
-type GenerationStatus = "idle" | "uploading" | "generating" | "ready" | "error";
+type GenerationStatus = "idle" | "uploading" | "generating" | "reconnecting" | "ready" | "error";
 type PrintDimension = "x" | "y" | "z";
 type ModelUrls = { glb?: string; stl?: string };
 type SelectedImage = { file: File; previewUrl: string };
@@ -113,6 +119,8 @@ export function Studio({
   const [previewError, setPreviewError] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [textureSourceTask, setTextureSourceTask] = useState<PreviewTask | null>(null);
+  const [resumableModel, setResumableModel] = useState(false);
+  const [resumedTextureJob, setResumedTextureJob] = useState<ResumedTextureJob | null>(null);
   const [exportModel, setExportModel] = useState<ModelExportAction | null>(null);
   const [, setCreationsRefreshKey] = useState(0);
   const [editingCreationId, setEditingCreationId] = useState<string | null>(null);
@@ -312,7 +320,116 @@ export function Studio({
     if (activeRequest.current === controller) activeRequest.current = null;
   };
 
-  const startGeneration = async (selectedImages: SelectedImage[]) => {
+  const getDimensionValue = (dimension: PrintDimension) => {
+    const value = Number(dimensions[dimension]);
+    return Number.isFinite(value) && value > 0 ? value : 100;
+  };
+
+  const rememberModelTask = (task: PreviewTask) => {
+    previewTask.current = task;
+    setTextureSourceTask(task);
+    setResumableModel(true);
+  };
+
+  const pollModelUntilDone = async (task: PreviewTask, controller: AbortController) => {
+    let transientAttempts = 0;
+    for (let pollAttempt = 0; pollAttempt < 720; ) {
+      const delay = transientAttempts > 0 ? reconnectDelayMs(transientAttempts) : 5000;
+      await waitForPoll(delay, controller.signal);
+
+      let pollResponse: Response;
+      try {
+        pollResponse = await fetch("/api/poll-task", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            task_id: task.taskId,
+            task_type: task.taskType,
+            task_token: task.taskToken,
+          }),
+          signal: controller.signal,
+        });
+      } catch (pollError) {
+        if (controller.signal.aborted || !isTransientRequestFailure(pollError)) throw pollError;
+        transientAttempts += 1;
+        setStatus("reconnecting");
+        continue;
+      }
+
+      const pollResult = await readJson(pollResponse);
+      if (!pollResponse.ok) {
+        if (isTransientRequestFailure(null, pollResponse.status)) {
+          transientAttempts += 1;
+          setStatus("reconnecting");
+          continue;
+        }
+        throw new Error(getApiError(pollResult) ?? "Could not check the generation status.");
+      }
+      if (!isRecord(pollResult) || typeof pollResult.status !== "string") {
+        throw new Error("The generation service returned an invalid task status.");
+      }
+
+      transientAttempts = 0;
+      setStatus((current) => (current === "reconnecting" ? "generating" : current));
+      if (pollResult.status === "FAILED" || pollResult.status === "CANCELED") {
+        throw new Error(getApiError(pollResult) ?? "The generation service could not create this model.");
+      }
+      if (
+        typeof pollResult.progress === "number" &&
+        Number.isFinite(pollResult.progress)
+      ) {
+        setProgress(Math.min(100, Math.max(0, pollResult.progress)));
+      }
+      if (pollResult.status !== "SUCCEEDED") {
+        pollAttempt += 1;
+        continue;
+      }
+
+      const urls = isRecord(pollResult.model_urls) ? pollResult.model_urls : null;
+      const glb = urls && typeof urls.glb === "string" ? urls.glb : undefined;
+      const stl = urls && typeof urls.stl === "string" ? urls.stl : undefined;
+      if (!glb && !stl) {
+        throw new Error("The model finished without a downloadable GLB or STL file.");
+      }
+      setModelUrls({ glb, stl });
+      setProgress(100);
+      setStatus("ready");
+      if (glb) await loadModelPreview(task, controller.signal);
+      return;
+    }
+
+    throw new Error(
+      "Model generation is still running after one hour. Resume to keep checking the same task.",
+    );
+  };
+
+  const resumeActiveModel = async () => {
+    const task = previewTask.current;
+    if (!task) return;
+    activeRequest.current?.abort();
+    const controller = new AbortController();
+    activeRequest.current = controller;
+    setError("");
+    setFailedStage(null);
+    setStatus("generating");
+    setGenerationModalOpen(true);
+    try {
+      await pollModelUntilDone(task, controller);
+    } catch (generationError) {
+      if (controller.signal.aborted) return;
+      setError(
+        generationError instanceof Error
+          ? generationError.message
+          : "An unexpected error occurred during model generation.",
+      );
+      setFailedStage("generating");
+      setStatus("error");
+    } finally {
+      if (activeRequest.current === controller) activeRequest.current = null;
+    }
+  };
+
+  const startGeneration = async (selectedImages: SelectedImage[], force = false) => {
     if (selectedImages.length === 0) return;
 
     let activeStage: "uploading" | "generating" = "uploading";
@@ -345,15 +462,33 @@ export function Studio({
         signal: controller.signal,
       });
 
-      const createResponse = await fetch("/api/generate-3d", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          image_urls: uploaded.urls,
-          upload_authorization: uploaded.authorization,
-        }),
-        signal: controller.signal,
-      });
+      const requestBody = {
+        image_urls: uploaded.urls,
+        upload_authorization: uploaded.authorization,
+        ...(force ? { idempotency_nonce: crypto.randomUUID() } : {}),
+      };
+      let createResponse: Response | null = null;
+      let transientAttempts = 0;
+      while (!createResponse || (!createResponse.ok && createResponse.status >= 500)) {
+        if (createResponse) {
+          transientAttempts += 1;
+          setStatus("reconnecting");
+          await waitForPoll(reconnectDelayMs(transientAttempts), controller.signal);
+        }
+        try {
+          createResponse = await fetch("/api/generate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(requestBody),
+            signal: controller.signal,
+          });
+        } catch (createError) {
+          if (controller.signal.aborted || !isTransientRequestFailure(createError)) throw createError;
+          transientAttempts += 1;
+          setStatus("reconnecting");
+          await waitForPoll(reconnectDelayMs(transientAttempts), controller.signal);
+        }
+      }
       const createResult = await readJson(createResponse);
       if (!createResponse.ok) {
         throw new Error(getApiError(createResult) ?? "Could not start 3D generation.");
@@ -368,16 +503,13 @@ export function Studio({
         throw new Error("The generation service returned an invalid task response.");
       }
 
-      const taskId = createResult.task_id;
-      const taskType = createResult.task_type;
-      const taskToken = createResult.task_token;
       const sourceName = selectedImages[0]?.file.name
         .replace(/-isolated\.png$/i, "")
         .replace(/\.[^.]+$/, "");
       const task: PreviewTask = {
-        taskId,
-        taskType,
-        taskToken,
+        taskId: createResult.task_id,
+        taskType: createResult.task_type,
+        taskToken: createResult.task_token,
         creationName: sourceName ? `${sourceName} model` : "3D creation",
         dimensions: {
           width: getDimensionValue("x"),
@@ -385,53 +517,15 @@ export function Studio({
           height: getDimensionValue("z"),
         },
       };
-      previewTask.current = task;
-      setTextureSourceTask(task);
+      rememberModelTask(task);
       activeStage = "generating";
-      setStatus("generating");
-
-      for (let pollAttempt = 0; pollAttempt < 720; pollAttempt += 1) {
-        await new Promise((resolve) => window.setTimeout(resolve, 5000));
-        if (controller.signal.aborted) return;
-
-        const pollResponse = await fetch("/api/poll-task", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            task_id: taskId,
-            task_type: taskType,
-            task_token: taskToken,
-          }),
-          signal: controller.signal,
-        });
-        const pollResult = await readJson(pollResponse);
-        if (!pollResponse.ok) {
-          if (pollResponse.status >= 500) continue;
-          throw new Error(getApiError(pollResult) ?? "Could not check the generation status.");
-        }
-        if (!isRecord(pollResult) || typeof pollResult.status !== "string") {
-          throw new Error("The generation service returned an invalid task status.");
-        }
-
-        if (pollResult.status === "FAILED" || pollResult.status === "CANCELED") {
-          throw new Error(getApiError(pollResult) ?? "The generation service could not create this model.");
-        }
-
-        if (
-          typeof pollResult.progress === "number" &&
-          Number.isFinite(pollResult.progress)
-        ) {
-          setProgress(Math.min(100, Math.max(0, pollResult.progress)));
-        }
-
-        if (pollResult.status === "SUCCEEDED") {
-          const urls = isRecord(pollResult.model_urls) ? pollResult.model_urls : null;
-          const glb = urls && typeof urls.glb === "string" ? urls.glb : undefined;
-          const stl = urls && typeof urls.stl === "string" ? urls.stl : undefined;
-          if (!glb && !stl) {
-            throw new Error("The model finished without a downloadable GLB or STL file.");
-          }
-
+      if (
+        createResult.status === "succeeded" &&
+        isRecord(createResult.model_urls)
+      ) {
+        const glb = typeof createResult.model_urls.glb === "string" ? createResult.model_urls.glb : undefined;
+        const stl = typeof createResult.model_urls.stl === "string" ? createResult.model_urls.stl : undefined;
+        if (glb || stl) {
           setModelUrls({ glb, stl });
           setProgress(100);
           setStatus("ready");
@@ -439,12 +533,18 @@ export function Studio({
           return;
         }
       }
-
-      throw new Error(
-        "Model generation is still running after one hour. Keep the task details and check again later.",
-      );
+      if (typeof createResult.progress === "number" && Number.isFinite(createResult.progress)) {
+        setProgress(Math.min(100, Math.max(0, createResult.progress)));
+      }
+      setStatus("generating");
+      await pollModelUntilDone(task, controller);
     } catch (generationError) {
       if (controller.signal.aborted) return;
+      if (isTransientRequestFailure(generationError)) {
+        setStatus("reconnecting");
+        setFailedStage(activeStage);
+        return;
+      }
       setError(
         generationError instanceof Error
           ? generationError.message
@@ -459,10 +559,109 @@ export function Studio({
     }
   };
 
+  useEffect(() => {
+    const controller = new AbortController();
+    const hydrateActiveJobs = async () => {
+      try {
+        const response = await fetch("/api/jobs/active", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const result = await readJson(response);
+        if (!response.ok || !isRecord(result) || !Array.isArray(result.jobs)) return;
+
+        const jobs = result.jobs.filter(isRecord);
+        const modelJob = jobs.find((job) => job.type === "model" && typeof job.meshyTaskId === "string");
+        const textureJob = jobs.find((job) => job.type === "texture" && typeof job.meshyTaskId === "string");
+        if (controller.signal.aborted) return;
+
+        if (
+          textureJob &&
+          typeof textureJob.taskToken === "string" &&
+          (textureJob.status === "queued" || textureJob.status === "processing")
+        ) {
+          setResumedTextureJob({
+            taskId: textureJob.meshyTaskId as string,
+            taskToken: textureJob.taskToken,
+            progress: typeof textureJob.progress === "number" ? textureJob.progress : 0,
+          });
+        }
+
+        if (
+          !modelJob ||
+          (modelJob.meshyTaskType !== "image-to-3d" && modelJob.meshyTaskType !== "multi-image-to-3d") ||
+          typeof modelJob.taskToken !== "string"
+        ) {
+          return;
+        }
+
+        const task: PreviewTask = {
+          taskId: modelJob.meshyTaskId as string,
+          taskType: modelJob.meshyTaskType,
+          taskToken: modelJob.taskToken,
+          creationName: "3D creation",
+          dimensions: {
+            width: getDimensionValue("x"),
+            depth: getDimensionValue("y"),
+            height: getDimensionValue("z"),
+          },
+        };
+        rememberModelTask(task);
+        if (typeof modelJob.progress === "number") {
+          setProgress(Math.min(100, Math.max(0, modelJob.progress)));
+        }
+
+        if (modelJob.status === "succeeded" && isRecord(modelJob.outputUrls)) {
+          const glb = typeof modelJob.outputUrls.glb === "string" ? modelJob.outputUrls.glb : undefined;
+          const stl = typeof modelJob.outputUrls.stl === "string" ? modelJob.outputUrls.stl : undefined;
+          if (!glb && !stl) return;
+          setModelUrls({ glb, stl });
+          setProgress(100);
+          setStatus("ready");
+          if (glb) {
+            const previewController = new AbortController();
+            activeRequest.current = previewController;
+            await loadModelPreview(task, previewController.signal);
+          }
+          return;
+        }
+
+        if (modelJob.status === "queued" || modelJob.status === "processing") {
+          setStatus("generating");
+          setGenerationModalOpen(true);
+          const pollController = new AbortController();
+          activeRequest.current = pollController;
+          try {
+            await pollModelUntilDone(task, pollController);
+          } catch (pollError) {
+            if (pollController.signal.aborted || isTransientRequestFailure(pollError)) return;
+            setError(pollError instanceof Error ? pollError.message : "The generation could not be restored.");
+            setFailedStage("generating");
+            setStatus("error");
+          }
+        }
+      } catch (hydrateError) {
+        if (controller.signal.aborted) return;
+        if (!isTransientRequestFailure(hydrateError)) {
+          console.error("Could not restore the active generation job.", hydrateError);
+        }
+      }
+    };
+
+    void hydrateActiveJobs();
+    return () => {
+      controller.abort();
+      activeRequest.current?.abort();
+    };
+    // Restore the in-flight job once on mount. Later submits own their requests.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const photoControlsDisabled =
     images.length >= 4 ||
     status === "uploading" ||
     status === "generating" ||
+    status === "reconnecting" ||
     preprocessingPhase !== null;
 
   const revokePendingPreviews = () => {
@@ -621,17 +820,14 @@ export function Studio({
     setDimensions((current) => ({ ...current, [dimension]: value }));
   };
 
-  const getDimensionValue = (dimension: PrintDimension) => {
-    const value = Number(dimensions[dimension]);
-    return Number.isFinite(value) && value > 0 ? value : 100;
-  };
-
   const handleRemoveImage = () => {
     activeRequest.current?.abort();
     activeRequest.current = null;
     previewUrls.current.forEach((url) => URL.revokeObjectURL(url));
     previewUrls.current = [];
     setImages([]);
+    setResumableModel(false);
+    setResumedTextureJob(null);
     setGenerationModalOpen(false);
     setFailedStage(null);
     setStatus("idle");
@@ -1017,7 +1213,7 @@ export function Studio({
                 </div>
               )}
 
-              {images.length > 0 && status !== "idle" && !generationModalOpen && (
+              {status !== "idle" && !generationModalOpen && (
                 <div className="mt-5 rounded-xl bg-[#f8f9f5] px-4 py-4 sm:px-5">
                   <div className="mb-4 flex items-center justify-between">
                     <div>
@@ -1025,6 +1221,7 @@ export function Studio({
                       <p className="mt-1 text-[11px] text-[#90948a]" role="status" aria-live="polite">
                         {status === "uploading" && "Uploading your image…"}
                         {status === "generating" && `Generating your model… ${progress}%`}
+                        {status === "reconnecting" && "Reconnecting…"}
                         {status === "ready" && "Your model is ready to print"}
                         {status === "error" && "Generation stopped"}
                       </p>
@@ -1035,13 +1232,14 @@ export function Studio({
                   </div>
                   <div className="grid grid-cols-3 gap-2.5">
                     {stages.map((stage, index) => {
-                      const currentIndex = stages.findIndex((item) => item.id === status);
+                      const visibleStatus = status === "reconnecting" ? "generating" : status;
+                      const currentIndex = stages.findIndex((item) => item.id === visibleStatus);
                       const isComplete = currentIndex > index;
-                      const isCurrent = stage.id === status;
+                      const isCurrent = stage.id === visibleStatus;
                       const fillWidth =
-                        status === "uploading" && isCurrent
+                        visibleStatus === "uploading" && isCurrent
                           ? "45%"
-                          : status === "generating" && isCurrent
+                          : visibleStatus === "generating" && isCurrent
                             ? `${progress}%`
                             : "100%";
 
@@ -1066,14 +1264,25 @@ export function Studio({
                   {status === "error" && error && (
                     <p role="alert" className="mt-3 text-xs font-medium text-[#b34e3a]">{error}</p>
                   )}
-                  {status === "error" && (
-                    <button
-                      type="button"
-                      onClick={() => void startGeneration(images)}
-                      className="mt-3 text-xs font-semibold text-[#536b2d] underline underline-offset-2"
-                    >
-                      Try again
-                    </button>
+                  {(status === "error" || status === "reconnecting") && (
+                    <div className="mt-3 flex flex-wrap gap-3">
+                      <button
+                        type="button"
+                        onClick={() => void resumeActiveModel()}
+                        disabled={!resumableModel}
+                        className="text-xs font-semibold text-[#536b2d] underline underline-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Resume
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void startGeneration(images, true)}
+                        disabled={images.length === 0}
+                        className="text-xs font-semibold text-[#536b2d] underline underline-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Generate again
+                      </button>
+                    </div>
                   )}
                 </div>
               )}
@@ -1144,12 +1353,12 @@ export function Studio({
             </button>
             <button
               type="button"
-              onClick={() => void startGeneration(images)}
-              disabled={images.length === 0 || status === "uploading" || status === "generating"}
+              onClick={() => void startGeneration(images, status === "ready" || status === "error")}
+              disabled={images.length === 0 || status === "uploading" || status === "generating" || status === "reconnecting"}
               className="button-primary mt-2 w-full gap-2"
             >
               <Sparkles aria-hidden="true" className="size-[18px] text-[#bfdbfe]" />
-              {status === "ready" ? "Regenerate 3D model" : status === "uploading" || status === "generating" ? "Generating model…" : status === "error" ? "Try again" : "Generate 3D model"}
+              {status === "ready" ? "Regenerate 3D model" : status === "uploading" || status === "generating" ? "Generating model…" : status === "reconnecting" ? "Reconnecting…" : status === "error" ? "Generate again" : "Generate 3D model"}
             </button>
             <p className="mt-3 text-center text-[10px] leading-5 text-[#a0a39b]">
               {status === "error" ? "Your photos are still here if you want to retry." : images.length ? "Dimensions are saved with this session." : "Add one to four photos of the same object."}
@@ -1285,6 +1494,7 @@ export function Studio({
                     model={activeModelBlob}
                     sourceImages={images}
                     sourceTask={textureSourceTask ?? undefined}
+                    resumedJob={resumedTextureJob}
                     onTextureReady={applyGeneratedTexture}
                   />
                 </div>
@@ -1358,6 +1568,8 @@ export function Studio({
         aria-label={
           status === "generating"
             ? `View generation progress, ${progress}%`
+            : status === "reconnecting"
+              ? "View reconnection status"
             : "View generation details"
         }
       >
@@ -1372,6 +1584,8 @@ export function Studio({
           ? "Uploading photos"
           : status === "generating"
             ? `Generating · ${progress}%`
+            : status === "reconnecting"
+              ? "Reconnecting…"
             : status === "ready"
               ? "View model details"
               : "View generation error"}
@@ -1404,7 +1618,9 @@ export function Studio({
       modelUrls={modelUrls}
       exportReady={Boolean(exportModel)}
       onClose={() => setGenerationModalOpen(false)}
-      onRetry={() => void startGeneration(images)}
+      canResume={resumableModel}
+      onResume={() => void resumeActiveModel()}
+      onGenerateAgain={() => void startGeneration(images, true)}
       onExport={() => exportModel?.()}
       onViewModel={() => {
         setGenerationModalOpen(false);

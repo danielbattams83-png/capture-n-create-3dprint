@@ -7,7 +7,7 @@ import {
   MeshyApiError,
   readTaskToken,
 } from "@/lib/meshy";
-import { deleteTemporaryBlobs } from "@/lib/blob-uploads";
+import { syncJobFromMeshy } from "@/lib/jobs";
 
 const taskStatuses = new Set(["PENDING", "IN_PROGRESS", "SUCCEEDED", "FAILED", "CANCELED"]);
 
@@ -72,22 +72,27 @@ export async function POST(request: Request) {
         : 0;
 
     if (task.status === "FAILED" || task.status === "CANCELED") {
-      await deleteTemporaryBlobs(token.blobUrls);
       const taskError = getErrorMessage(task.task_error);
+      const errorMessage =
+        taskError ??
+        (task.status === "FAILED"
+          ? "The image generation service could not create a model from this image."
+          : "The image generation task was canceled.");
+      await syncJobFromMeshy({
+        meshyTaskId: body.task_id.trim(),
+        status: "failed",
+        progress,
+        error: errorMessage,
+      });
       return NextResponse.json({
         task_id: body.task_id,
         status: task.status,
         progress,
-        error:
-          taskError ??
-          (task.status === "FAILED"
-            ? "The image generation service could not create a model from this image."
-            : "The image generation task was canceled."),
+        error: errorMessage,
       });
     }
 
     if (task.status === "SUCCEEDED") {
-      await deleteTemporaryBlobs(token.blobUrls);
       const modelUrls = isRecord(task.model_urls) ? task.model_urls : {};
       const glb = getSecureModelUrl(modelUrls.glb);
       const stl = getSecureModelUrl(modelUrls.stl);
@@ -98,6 +103,13 @@ export async function POST(request: Request) {
         );
       }
 
+      await syncJobFromMeshy({
+        meshyTaskId: body.task_id.trim(),
+        status: "succeeded",
+        progress: 100,
+        outputUrls: { glb, stl },
+        error: null,
+      });
       return NextResponse.json({
         task_id: body.task_id,
         status: task.status,
@@ -106,6 +118,12 @@ export async function POST(request: Request) {
       });
     }
 
+    await syncJobFromMeshy({
+      meshyTaskId: body.task_id.trim(),
+      status: "processing",
+      progress,
+      error: null,
+    });
     return NextResponse.json({
       task_id: body.task_id,
       status: task.status,

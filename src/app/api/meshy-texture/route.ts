@@ -1,17 +1,15 @@
 import { NextResponse } from "next/server";
+import { validateUploadedBlobs } from "@/lib/blob-uploads";
+import { createIdempotencyKey, readIdempotencyNonce } from "@/lib/idempotency";
+import { beginGenerationJob, toPublicJob } from "@/lib/jobs";
 import {
-  createTaskToken,
   isRecord,
   isSameOrigin,
   MeshyApiError,
   readTaskToken,
 } from "@/lib/meshy";
 import { submitRetextureTask } from "@/lib/meshyService";
-import {
-  checkRateLimit,
-  deleteTemporaryBlobs,
-  validateUploadedBlobs,
-} from "@/lib/blob-uploads";
+import { readStudioSession, withStudioSession } from "@/lib/session";
 
 export async function POST(request: Request) {
   if (!isSameOrigin(request)) {
@@ -84,46 +82,43 @@ export async function POST(request: Request) {
     );
   }
 
-  let temporaryUrls: string[] = [];
+  let nonce = "";
+  try {
+    nonce = readIdempotencyNonce(body.idempotency_nonce);
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "The idempotency nonce is invalid." },
+      { status: 400 },
+    );
+  }
+
+  const session = readStudioSession(request);
+  const temporaryUrls: string[] = [];
   try {
     let inputTaskId: string | undefined;
     let modelUrl: string | undefined;
-    let rateLimitKey: string;
-    let rateLimitCount: number;
 
     if (hasTaskSource) {
       inputTaskId = body.input_task_id as string;
-      const taskType = body.input_task_type as
-        | "image-to-3d"
-        | "multi-image-to-3d";
-      if (
-        !readTaskToken(
-          inputTaskId,
-          taskType,
-          body.source_task_token as string,
-        )
-      ) {
+      const taskType = body.input_task_type as "image-to-3d" | "multi-image-to-3d";
+      if (!readTaskToken(inputTaskId, taskType, body.source_task_token as string)) {
         throw new MeshyApiError("The source task credentials are invalid or expired.", 403);
       }
-      rateLimitKey = `meshy-texture-task:${body.source_task_token as string}`;
-      rateLimitCount = 3;
     } else {
       const modelUrls = await validateUploadedBlobs({
-        request,
+        userId: session.userId,
         authorization: body.upload_authorization as string,
         urls: [body.model_url as string],
         kind: "model",
       });
       temporaryUrls.push(...modelUrls);
       modelUrl = modelUrls[0];
-      rateLimitKey = `meshy-texture-upload:${body.upload_authorization as string}`;
-      rateLimitCount = 1;
     }
 
     let imageUrls: string[] | undefined;
     if (hasPhotoStyle) {
       imageUrls = await validateUploadedBlobs({
-        request,
+        userId: session.userId,
         authorization: body.image_upload_authorization as string,
         urls: body.image_urls as string[],
         kind: "image",
@@ -131,33 +126,74 @@ export async function POST(request: Request) {
       temporaryUrls.push(...imageUrls);
     }
 
-    if (!checkRateLimit(rateLimitKey, rateLimitCount, 10 * 60 * 1000).allowed) {
-      throw new MeshyApiError("Too many texture requests for this model. Try again shortly.", 429);
-    }
-    const taskId = await submitRetextureTask({
-      inputTaskId,
-      modelUrl,
-      prompt: typeof body.prompt === "string" ? body.prompt : undefined,
-      stylePreset: typeof body.style_preset === "string" ? body.style_preset : undefined,
-      imageUrls,
+    const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
+    const stylePreset = typeof body.style_preset === "string" ? body.style_preset : "";
+    const idempotencyKey = createIdempotencyKey({
+      type: "texture",
+      source: inputTaskId ?? modelUrl ?? "",
+      prompt,
+      stylePreset,
+      imageUrls: imageUrls ?? [],
+      nonce,
     });
-    return NextResponse.json(
-      {
-        task_id: taskId,
-        task_token: createTaskToken(taskId, "retexture", temporaryUrls),
+    const { job, reused } = await beginGenerationJob({
+      userId: session.userId,
+      idempotencyKey,
+      type: "texture",
+      inputUrls: temporaryUrls,
+      parameters: {
+        prompt,
+        stylePreset,
+        inputTaskId: inputTaskId ?? null,
+        modelUrl: modelUrl ?? null,
+        nonce,
       },
-      { status: 201 },
+      submit: async () => {
+        const taskId = await submitRetextureTask({
+          inputTaskId,
+          modelUrl,
+          prompt: prompt || undefined,
+          stylePreset: stylePreset || undefined,
+          imageUrls,
+        });
+        return { meshyTaskId: taskId, meshyTaskType: "retexture" as const };
+      },
+    });
+    const pub = toPublicJob(job);
+    const response = NextResponse.json(
+      {
+        job_id: pub.id,
+        resumed: reused,
+        task_id: pub.meshyTaskId,
+        task_token: pub.taskToken,
+        status: pub.status,
+        progress: pub.progress,
+        error: pub.error,
+      },
+      { status: reused ? 200 : 201 },
     );
+    response.headers.set("Cache-Control", "no-store");
+    return withStudioSession(response, session);
   } catch (error) {
     if (error instanceof MeshyApiError) {
-      if (error.status < 500) await deleteTemporaryBlobs(temporaryUrls);
-      return NextResponse.json({ error: error.message }, { status: error.status });
+      return withStudioSession(
+        NextResponse.json(
+          { error: error.message },
+          {
+            status: error.status,
+            headers: error.retryAfterSeconds
+              ? { "Retry-After": String(error.retryAfterSeconds) }
+              : undefined,
+          },
+        ),
+        session,
+      );
     }
 
     console.error("Texture task creation failed.", error);
-    return NextResponse.json(
-      { error: "Unable to start texture generation." },
-      { status: 500 },
+    return withStudioSession(
+      NextResponse.json({ error: "Unable to start texture generation." }, { status: 500 }),
+      session,
     );
   }
 }
