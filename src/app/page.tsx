@@ -18,6 +18,7 @@ import {
   reconnectDelayMs,
   waitForPoll,
 } from "@/lib/resilient-poll";
+import { takeConceptHandoff } from "@/lib/concept-handoff";
 import { isolateAndCropSubject } from "@/lib/image-preprocessing";
 import { fetchKhronosAssets, type KhronosAsset } from "@/lib/khronos-assets";
 import {
@@ -727,6 +728,62 @@ export function Studio({
       setPreprocessingPhase("error");
     }
   };
+
+  const adoptPreparedImages = (files: File[]) => {
+    const selected = files.slice(0, 4).map((file) => {
+      const previewUrl = URL.createObjectURL(file);
+      previewUrls.current.push(previewUrl);
+      return { file, previewUrl };
+    });
+    setImages(selected);
+    setError("");
+    setStatus("idle");
+  };
+
+  useEffect(() => {
+    const handoff = takeConceptHandoff();
+    if (!handoff) return;
+    const controller = new AbortController();
+    const openConcept = async () => {
+      try {
+        const files = await Promise.all(
+          handoff.urls.slice(0, 4).map(async (url, index) => {
+            const response = await fetch("/api/image/file", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                task_id: handoff.taskId,
+                task_token: handoff.taskToken,
+                url,
+              }),
+              signal: controller.signal,
+            });
+            if (!response.ok) {
+              throw new Error("The concept image could not be opened in the model studio.");
+            }
+            const blob = await response.blob();
+            return new File([blob], `concept-${index + 1}.png`, {
+              type: blob.type || "image/png",
+            });
+          }),
+        );
+        if (controller.signal.aborted) return;
+        if (handoff.skipPreprocessing) adoptPreparedImages(files);
+        else await beginImagePreprocessing(files);
+      } catch (handoffError) {
+        if (controller.signal.aborted) return;
+        setError(
+          handoffError instanceof Error
+            ? handoffError.message
+            : "The concept images could not be opened.",
+        );
+      }
+    };
+    void openConcept();
+    return () => controller.abort();
+    // Open a handed-off concept once. Later photo edits stay in this studio.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const approveProcessedImages = () => {
     if (preprocessingPhase !== "review" || processedImageReviews.length === 0) return;

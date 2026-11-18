@@ -4,12 +4,13 @@ import { Pool, type PoolClient } from "@neondatabase/serverless";
 import { deleteTemporaryBlobs } from "@/lib/blob-uploads";
 import { createTaskToken, MeshyApiError, type MeshyTaskType } from "@/lib/meshy";
 
-export type JobType = "model" | "texture";
+export type JobType = "model" | "texture" | "image";
 export type JobStatus = "queued" | "processing" | "succeeded" | "failed";
 
 export type JobOutputUrls = {
   glb?: string;
   stl?: string;
+  images?: string[];
 };
 
 export type JobRecord = {
@@ -40,6 +41,7 @@ export type PublicJob = {
   outputUrls: JobOutputUrls | null;
   error: string | null;
   updatedAt: string;
+  parameters: Record<string, unknown>;
 };
 
 type JobRow = {
@@ -74,12 +76,12 @@ const SCHEMA_STATEMENTS = [
     error text,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT jobs_type_check CHECK (type IN ('model', 'texture')),
+    CONSTRAINT jobs_type_check CHECK (type IN ('model', 'texture', 'image')),
     CONSTRAINT jobs_status_check CHECK (status IN ('queued', 'processing', 'succeeded', 'failed')),
     CONSTRAINT jobs_progress_check CHECK (progress >= 0 AND progress <= 100),
     CONSTRAINT jobs_task_type_check CHECK (
       meshy_task_type IS NULL
-      OR meshy_task_type IN ('image-to-3d', 'multi-image-to-3d', 'retexture')
+      OR meshy_task_type IN ('image-to-3d', 'multi-image-to-3d', 'retexture', 'text-to-image')
     ),
     CONSTRAINT jobs_user_idempotency_key UNIQUE (user_id, idempotency_key)
   )`,
@@ -90,6 +92,13 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS jobs_user_active_idx
     ON jobs (user_id)
     WHERE status IN ('queued', 'processing')`,
+  `ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_type_check`,
+  `ALTER TABLE jobs ADD CONSTRAINT jobs_type_check CHECK (type IN ('model', 'texture', 'image'))`,
+  `ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_task_type_check`,
+  `ALTER TABLE jobs ADD CONSTRAINT jobs_task_type_check CHECK (
+    meshy_task_type IS NULL
+    OR meshy_task_type IN ('image-to-3d', 'multi-image-to-3d', 'retexture', 'text-to-image')
+  )`,
   `CREATE TABLE IF NOT EXISTS request_rates (
     id uuid PRIMARY KEY,
     user_id text NOT NULL,
@@ -192,11 +201,18 @@ function asOutputUrls(value: unknown): JobOutputUrls | null {
   if (!record) return null;
   const glb = typeof record.glb === "string" ? record.glb : undefined;
   const stl = typeof record.stl === "string" ? record.stl : undefined;
-  return glb || stl ? { glb, stl } : null;
+  const images = asStringArray(record.images).filter((url) => url.startsWith("https://"));
+  if (!glb && !stl && images.length === 0) return null;
+  return { glb, stl, images: images.length > 0 ? images : undefined };
 }
 
 function asTaskType(value: string | null): MeshyTaskType | null {
-  if (value === "image-to-3d" || value === "multi-image-to-3d" || value === "retexture") {
+  if (
+    value === "image-to-3d" ||
+    value === "multi-image-to-3d" ||
+    value === "retexture" ||
+    value === "text-to-image"
+  ) {
     return value;
   }
   return null;
@@ -212,7 +228,7 @@ function mapJob(row: JobRow): JobRecord {
     idempotencyKey: row.idempotency_key,
     meshyTaskId: row.meshy_task_id,
     meshyTaskType: asTaskType(row.meshy_task_type),
-    type: row.type === "texture" ? "texture" : "model",
+    type: row.type === "texture" ? "texture" : row.type === "image" ? "image" : "model",
     status: row.status as JobStatus,
     progress: Number(row.progress) || 0,
     inputUrls: asStringArray(row.input_urls),
@@ -239,6 +255,7 @@ export function toPublicJob(job: JobRecord): PublicJob {
     outputUrls: job.outputUrls,
     error: job.error,
     updatedAt: job.updatedAt,
+    parameters: job.parameters,
   };
 }
 
@@ -438,7 +455,12 @@ export async function beginGenerationJob(
     }
     const rateLimit = await consumeRateLimitOn(client, {
       userId: input.userId,
-      action: input.type === "model" ? "model-generation" : "texture-generation",
+      action:
+        input.type === "model"
+          ? "model-generation"
+          : input.type === "texture"
+            ? "texture-generation"
+            : "image-generation",
       limit: GENERATION_RATE_LIMIT,
       windowMs: GENERATION_RATE_WINDOW_MS,
     });
@@ -503,6 +525,18 @@ export async function beginGenerationJob(
   }
 }
 
+export async function getOwnedJobByTask(
+  userId: string,
+  meshyTaskId: string,
+): Promise<JobRecord | null> {
+  await ensureJobsSchema();
+  const result = await getPool().query<JobRow>(
+    `SELECT * FROM jobs WHERE user_id = $1 AND meshy_task_id = $2 LIMIT 1`,
+    [userId, meshyTaskId],
+  );
+  return result.rows[0] ? mapJob(result.rows[0]) : null;
+}
+
 export async function listResumableJobs(userId: string): Promise<JobRecord[]> {
   await ensureJobsSchema();
   const result = await getPool().query<JobRow>(
@@ -517,7 +551,7 @@ export async function listResumableJobs(userId: string): Promise<JobRecord[]> {
   );
   const jobs = result.rows.map(mapJob).filter((job) => job.meshyTaskId);
   const picked: JobRecord[] = [];
-  for (const type of ["model", "texture"] as const) {
+  for (const type of ["model", "texture", "image"] as const) {
     const ofType = jobs.filter((job) => job.type === type);
     const live = ofType.find((job) => job.status === "queued" || job.status === "processing");
     const chosen = live ?? ofType.find((job) => job.status === "succeeded");

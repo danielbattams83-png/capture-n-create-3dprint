@@ -35,7 +35,7 @@ export function isSameOrigin(request: Request): boolean {
   }
 }
 
-export type MeshyTaskType = "image-to-3d" | "multi-image-to-3d" | "retexture";
+export type MeshyTaskType = "image-to-3d" | "multi-image-to-3d" | "retexture" | "text-to-image";
 
 export type MeshyTaskTokenPayload = {
   taskId: string;

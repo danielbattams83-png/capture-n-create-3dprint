@@ -47,6 +47,109 @@ function getSecureUrl(value: unknown): string | undefined {
   }
 }
 
+export const TEXT_TO_IMAGE_MODELS = ["nano-banana", "nano-banana-2", "gpt-image-2"] as const;
+export const TEXT_TO_IMAGE_RATIOS = ["1:1", "3:4", "4:3", "16:9", "9:16"] as const;
+
+export type TextToImageModel = (typeof TEXT_TO_IMAGE_MODELS)[number];
+export type TextToImageRatio = (typeof TEXT_TO_IMAGE_RATIOS)[number];
+
+export type TextToImageTask = {
+  id: string;
+  status: RetextureTaskStatus;
+  progress: number;
+  imageUrls: string[];
+  error?: string;
+};
+
+function httpsUrls(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => {
+    if (typeof item !== "string") return false;
+    try {
+      return new URL(item).protocol === "https:";
+    } catch {
+      return false;
+    }
+  });
+}
+
+export async function submitTextToImageTask(input: {
+  prompt: string;
+  aiModel: TextToImageModel;
+  aspectRatio: TextToImageRatio;
+  removeBackground: boolean;
+  generateMultiView: boolean;
+}): Promise<string> {
+  const prompt = input.prompt.trim();
+  if (!prompt) throw new MeshyApiError("Describe the image you want to generate.", 400);
+  if (prompt.length > 1000) throw new MeshyApiError("The image description is too long.", 400);
+
+  const response = await fetchMeshy("/text-to-image", {
+    method: "POST",
+    body: JSON.stringify({
+      ai_model: input.aiModel,
+      prompt,
+      remove_background: input.removeBackground,
+      generate_multi_view: input.generateMultiView,
+      ...(input.generateMultiView ? {} : { aspect_ratio: input.aspectRatio }),
+    }),
+  });
+  if (!isRecord(response) || typeof response.result !== "string" || !response.result) {
+    throw new MeshyApiError("The image service returned a task response without an ID.", 502);
+  }
+  return response.result;
+}
+
+export async function getTextToImageTask(taskId: string): Promise<TextToImageTask> {
+  const response = await fetchMeshy(`/text-to-image/${encodeURIComponent(taskId)}`, {
+    method: "GET",
+  });
+  if (!isRecord(response) || typeof response.status !== "string") {
+    throw new MeshyApiError("The image service returned an invalid task.", 502);
+  }
+  const statuses = new Set<RetextureTaskStatus>([
+    "PENDING",
+    "IN_PROGRESS",
+    "SUCCEEDED",
+    "FAILED",
+    "CANCELED",
+  ]);
+  if (!statuses.has(response.status as RetextureTaskStatus)) {
+    throw new MeshyApiError("The image service returned an unknown task status.", 502);
+  }
+  const status = response.status as RetextureTaskStatus;
+  const progress =
+    typeof response.progress === "number" && Number.isFinite(response.progress)
+      ? Math.min(100, Math.max(0, response.progress))
+      : status === "SUCCEEDED"
+        ? 100
+        : 0;
+  const imageUrls = [
+    ...httpsUrls(response.image_urls),
+    ...httpsUrls(response.multiview_image_urls),
+    ...(typeof response.image_url === "string" && response.image_url.startsWith("https://")
+      ? [response.image_url]
+      : []),
+  ].filter((url, index, all) => all.indexOf(url) === index);
+  if (status === "SUCCEEDED" && imageUrls.length === 0) {
+    throw new MeshyApiError("Image generation completed without a downloadable image.", 502);
+  }
+  const taskError = getErrorMessage(response.task_error);
+  return {
+    id: taskId,
+    status,
+    progress,
+    imageUrls,
+    error:
+      taskError ??
+      (status === "FAILED"
+        ? "The image could not be generated."
+        : status === "CANCELED"
+          ? "Image generation was canceled."
+          : undefined),
+  };
+}
+
 export async function submitRetextureTask(input: {
   modelUrl?: string;
   inputTaskId?: string;
