@@ -11,14 +11,13 @@ import CameraCapture from "@/components/camera-capture";
 import GenerationModal from "@/components/generation-modal";
 import ImagePreprocessingModal from "@/components/image-preprocessing-modal";
 import type { ProcessedImageReview } from "@/components/image-preprocessing-modal";
-import TextureGenerator from "@/components/texture-generator";
+import type { ResumedTextureJob } from "@/components/texture-generator";
 import { uploadTemporaryFiles } from "@/lib/client-blob-upload";
 import {
   isTransientRequestFailure,
   reconnectDelayMs,
   waitForPoll,
 } from "@/lib/resilient-poll";
-import type { ResumedTextureJob } from "@/components/texture-generator";
 import { isolateAndCropSubject } from "@/lib/image-preprocessing";
 import { fetchKhronosAssets, type KhronosAsset } from "@/lib/khronos-assets";
 import {
@@ -28,6 +27,19 @@ import {
   updateCreationDimensions,
   type StoredCreation,
 } from "@/lib/creations-storage";
+
+const TextureGenerator = dynamic(() => import("@/components/texture-generator"), {
+  ssr: false,
+  loading: () => (
+    <div className="mt-4 flex h-28 items-center justify-center rounded-2xl border border-[#2a3340] bg-[#11151b] font-mono text-xs text-[#9ca3af]">
+      Loading texture tools…
+    </div>
+  ),
+});
+
+const StlExporter = dynamic(() => import("@/components/stl-exporter"), {
+  ssr: false,
+});
 
 const ModelViewer = dynamic(() => import("@/components/model-viewer"), {
   ssr: false,
@@ -1475,14 +1487,10 @@ export function Studio({
                           STL
                         </a>
                       )}
-                      <button
-                        type="button"
-                        onClick={() => exportModel?.()}
+                      <StlExporter
                         disabled={!exportModel}
-                        className="rounded-lg border border-white/[0.1] px-3 py-2 text-xs font-semibold text-[#d7dde5] hover:bg-[#1e242b] disabled:opacity-45"
-                      >
-                        Print-ready STL
-                      </button>
+                        onExport={() => exportModel?.()}
+                      />
                     </div>
                   </div>
                 </aside>

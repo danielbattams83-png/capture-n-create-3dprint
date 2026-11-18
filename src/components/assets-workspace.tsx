@@ -2,9 +2,17 @@
 
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
-import AssetBrowser from "@/components/asset-browser";
 import type { StoredCreation } from "@/lib/creations-storage";
 import type { KhronosAsset } from "@/lib/khronos-assets";
+
+const AssetBrowser = dynamic(() => import("@/components/asset-browser"), {
+  ssr: false,
+  loading: () => (
+    <div className="mt-8 flex min-h-64 items-center justify-center rounded-[22px] border border-white/[0.08] bg-[#182028] font-mono text-xs text-[#94a3b8]">
+      Loading free models…
+    </div>
+  ),
+});
 
 const CreationsCarousel = dynamic(() => import("@/components/creations-carousel"), {
   ssr: false,

@@ -2,12 +2,65 @@
 
 import { Component, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Canvas, useFrame } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Grid, Html, OrbitControls, useGLTF } from "@react-three/drei";
 import { Pause, Play } from "lucide-react";
-import { Box3, Vector3 } from "three";
-import type { Group } from "three";
-import { STLExporter } from "three/examples/jsm/exporters/STLExporter.js";
+import { Box3, Mesh, Vector3 } from "three";
+import type { Group, Material, Object3D, Texture } from "three";
+
+const MATERIAL_MAPS = [
+  "map",
+  "normalMap",
+  "roughnessMap",
+  "metalnessMap",
+  "emissiveMap",
+  "aoMap",
+  "bumpMap",
+  "displacementMap",
+  "alphaMap",
+  "lightMap",
+] as const;
+
+function ownMaterial(material: Material) {
+  const copy = material.clone();
+  const source = material as Material & Partial<Record<string, Texture | null>>;
+  const target = copy as Material & Partial<Record<string, Texture | null>>;
+  for (const key of MATERIAL_MAPS) {
+    const texture = source[key];
+    if (!texture) continue;
+    const cloned = texture.clone();
+    cloned.needsUpdate = true;
+    target[key] = cloned;
+  }
+  return copy;
+}
+
+function ownModel(source: Object3D) {
+  const object = source.clone(true);
+  object.traverse((child) => {
+    if (!(child instanceof Mesh)) return;
+    child.geometry = child.geometry.clone();
+    child.material = Array.isArray(child.material)
+      ? child.material.map((material) => ownMaterial(material))
+      : ownMaterial(child.material);
+  });
+  return object;
+}
+
+function disposeMaterial(material: Material) {
+  const textured = material as Material & Partial<Record<string, Texture | null>>;
+  for (const key of MATERIAL_MAPS) textured[key]?.dispose();
+  material.dispose();
+}
+
+function disposeObject(object: Object3D) {
+  object.traverse((child) => {
+    if (!(child instanceof Mesh)) return;
+    child.geometry.dispose();
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    materials.forEach(disposeMaterial);
+  });
+}
 
 export type ModelExportAction = () => void;
 
@@ -88,23 +141,28 @@ function LoadedModel({
 }: Omit<ModelViewerProps, "onRetry">) {
   const { scene } = useGLTF(modelUrl);
   const modelRef = useRef<Group>(null);
-  const normalized = useMemo(() => {
-    const object = scene.clone(true);
+  const fitted = useMemo(() => {
+    const object = ownModel(scene);
     const bounds = new Box3().setFromObject(object);
     const size = bounds.getSize(new Vector3());
     const center = bounds.getCenter(new Vector3());
     const safeSize = (value: number) => (value > 0 ? value : 1);
-
     return {
       object,
       offset: [-center.x, -bounds.min.y, -center.z] as [number, number, number],
-      scale: [
-        width / safeSize(size.x),
-        height / safeSize(size.y),
-        depth / safeSize(size.z),
-      ] as [number, number, number],
+      size: [safeSize(size.x), safeSize(size.y), safeSize(size.z)] as const,
     };
-  }, [scene, width, depth, height]);
+  }, [scene]);
+  const scale = [
+    width / fitted.size[0],
+    height / fitted.size[1],
+    depth / fitted.size[2],
+  ] as [number, number, number];
+
+  useEffect(() => {
+    const object = fitted.object;
+    return () => disposeObject(object);
+  }, [fitted.object]);
 
   useFrame(({ clock }, delta) => {
     const model = modelRef.current;
@@ -121,25 +179,20 @@ function LoadedModel({
     const model = modelRef.current;
     if (!model) return;
 
-    const exportModel = () => {
+    const exportModel = async () => {
       try {
         const previousPositionY = model.position.y;
         const previousRotationY = model.rotation.y;
         model.position.y = 0;
         model.rotation.y = 0;
         model.updateWorldMatrix(true, true);
-        const stlData = new STLExporter().parse(model, { binary: true });
+        const { downloadObjectAsStl } = await import("@/components/stl-exporter");
+        downloadObjectAsStl(
+          model,
+          `capture-create-model-${width}x${depth}x${height}mm.stl`,
+        );
         model.position.y = previousPositionY;
         model.rotation.y = previousRotationY;
-        const blob = new Blob([stlData], { type: "model/stl" });
-        const downloadUrl = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = downloadUrl;
-        link.download = `capture-create-model-${width}x${depth}x${height}mm.stl`;
-        document.body.append(link);
-        link.click();
-        link.remove();
-        window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
       } catch (error) {
         console.error("Could not export the scaled model as STL.", error);
         onExportError("Could not export the STL. Please try again.");
@@ -148,13 +201,38 @@ function LoadedModel({
 
     onExportReady(exportModel);
     return () => onExportReady(null);
-  }, [height, normalized, onExportError, onExportReady, width, depth]);
+  }, [depth, fitted.object, height, onExportError, onExportReady, width]);
 
   return (
-    <group ref={modelRef} scale={normalized.scale}>
-      <primitive object={normalized.object} position={normalized.offset} />
+    <group ref={modelRef} scale={scale}>
+      <primitive object={fitted.object} position={fitted.offset} />
     </group>
   );
+}
+
+function DemandFrames({
+  spinning,
+  visible,
+  revision,
+}: {
+  spinning: boolean;
+  visible: boolean;
+  revision: string;
+}) {
+  const invalidate = useThree((state) => state.invalidate);
+  const active = spinning && visible;
+
+  useEffect(() => {
+    if (!visible) return;
+    invalidate();
+  }, [invalidate, revision, spinning, visible]);
+
+  useFrame((state) => {
+    if (!active) return;
+    state.invalidate();
+  });
+
+  return null;
 }
 
 function LoadingModel() {
@@ -177,16 +255,47 @@ export default function ModelViewer({
   onRetry,
   animated = false,
 }: ModelViewerProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
   const [spinning, setSpinning] = useState(animated);
+  const [pageVisible, setPageVisible] = useState(true);
+  const [onScreen, setOnScreen] = useState(true);
+  const visible = pageVisible && onScreen;
+
+  useEffect(() => {
+    const onVisibility = () => setPageVisible(!document.hidden);
+    onVisibility();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => setOnScreen(entry?.isIntersecting ?? false),
+      { threshold: 0.05 },
+    );
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
 
   return (
     <ViewerErrorBoundary resetKey={modelUrl} onRetry={onRetry}>
-      <div className="relative h-[360px] min-h-[340px] w-full overflow-hidden rounded-2xl border border-[#232832] bg-[#0b0d10] sm:h-[420px]">
+      <div
+        ref={containerRef}
+        className="relative h-[360px] min-h-[340px] w-full overflow-hidden rounded-2xl border border-[#232832] bg-[#0b0d10] sm:h-[420px]"
+      >
         <Canvas
+          frameloop="demand"
           dpr={[1, 1.5]}
           camera={{ position: [230, 185, 230], fov: 40, near: 0.1, far: 2000 }}
           gl={{ antialias: true, alpha: false }}
         >
+          <DemandFrames
+            spinning={spinning && visible}
+            visible={visible}
+            revision={`${modelUrl}:${width}:${depth}:${height}`}
+          />
           <color attach="background" args={["#0b0d10"]} />
           <ambientLight intensity={1.1} />
           <directionalLight position={[120, 200, 100]} color="#60a5fa" intensity={2.2} />
@@ -199,7 +308,7 @@ export default function ModelViewer({
               height={height}
               onExportReady={onExportReady}
               onExportError={onExportError}
-              animated={spinning}
+              animated={spinning && visible}
             />
           </Suspense>
           <Grid
@@ -217,6 +326,7 @@ export default function ModelViewer({
           />
           <OrbitControls
             makeDefault
+            enabled={visible}
             target={[0, height / 2, 0]}
             minDistance={15}
             maxDistance={900}
