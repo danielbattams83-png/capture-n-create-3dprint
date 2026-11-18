@@ -1,9 +1,10 @@
 "use client";
 
-import { Component, Suspense, useEffect, useMemo, useRef } from "react";
+import { Component, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { Grid, Html, OrbitControls, useGLTF } from "@react-three/drei";
+import { Pause, Play } from "lucide-react";
 import { Box3, Vector3 } from "three";
 import type { Group } from "three";
 import { STLExporter } from "three/examples/jsm/exporters/STLExporter.js";
@@ -107,7 +108,11 @@ function LoadedModel({
 
   useFrame(({ clock }, delta) => {
     const model = modelRef.current;
-    if (!animated || !model) return;
+    if (!model) return;
+    if (!animated) {
+      model.position.y = 0;
+      return;
+    }
     model.position.y = Math.sin(clock.elapsedTime * 1.15) * 2;
     model.rotation.y += delta * 0.22;
   });
@@ -172,6 +177,8 @@ export default function ModelViewer({
   onRetry,
   animated = false,
 }: ModelViewerProps) {
+  const [spinning, setSpinning] = useState(animated);
+
   return (
     <ViewerErrorBoundary resetKey={modelUrl} onRetry={onRetry}>
       <div className="relative h-[360px] min-h-[340px] w-full overflow-hidden rounded-2xl border border-[#232832] bg-[#0b0d10] sm:h-[420px]">
@@ -192,7 +199,7 @@ export default function ModelViewer({
               height={height}
               onExportReady={onExportReady}
               onExportError={onExportError}
-              animated={animated}
+              animated={spinning}
             />
           </Suspense>
           <Grid
@@ -220,9 +227,22 @@ export default function ModelViewer({
         <div className="pointer-events-none absolute left-3 top-3 rounded-lg border border-[#232832] bg-[#14171d]/90 px-2.5 py-1.5 font-mono text-[10px] font-medium text-[#9ca3af] shadow-sm backdrop-blur">
           Print bed · 250 × 250 mm
         </div>
-        <div className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-[#232832] bg-[#14171d]/90 px-3 py-1.5 text-[10px] font-medium text-[#9ca3af] shadow-sm backdrop-blur">
+        <div className="pointer-events-none absolute bottom-3 left-3 max-w-[calc(100%-7.75rem)] truncate rounded-full border border-[#232832] bg-[#14171d]/90 px-3 py-1.5 text-[10px] font-medium text-[#9ca3af] shadow-sm backdrop-blur sm:left-1/2 sm:max-w-[min(28rem,calc(100%-16rem))] sm:-translate-x-1/2">
           Drag to orbit · Scroll to zoom · Right-drag to pan
         </div>
+        <button
+          type="button"
+          onClick={() => setSpinning((current) => !current)}
+          aria-pressed={spinning}
+          className="absolute bottom-3 right-3 inline-flex items-center gap-1.5 rounded-full border border-[#232832] bg-[#14171d]/90 px-3 py-1.5 text-[10px] font-semibold text-[#d7dde5] shadow-sm backdrop-blur transition hover:border-[#3b4654] hover:text-white"
+        >
+          {spinning ? (
+            <Pause aria-hidden="true" className="size-3" />
+          ) : (
+            <Play aria-hidden="true" className="size-3" />
+          )}
+          {spinning ? "Stop spin" : "Spin"}
+        </button>
       </div>
     </ViewerErrorBoundary>
   );

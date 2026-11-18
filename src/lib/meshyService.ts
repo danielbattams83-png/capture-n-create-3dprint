@@ -7,7 +7,6 @@ import {
   MeshyApiError,
 } from "@/lib/meshy";
 
-const MAX_MODEL_SIZE = 100 * 1024 * 1024;
 const MAX_PROMPT_LENGTH = 800;
 
 export const TEXTURE_STYLE_PRESETS = {
@@ -49,40 +48,71 @@ function getSecureUrl(value: unknown): string | undefined {
 }
 
 export async function submitRetextureTask(input: {
-  modelBytes: Buffer;
-  prompt: string;
-  stylePreset: string;
+  modelUrl?: string;
+  inputTaskId?: string;
+  prompt?: string;
+  stylePreset?: string;
+  imageUrls?: string[];
 }): Promise<string> {
-  if (input.modelBytes.length === 0 || input.modelBytes.length > MAX_MODEL_SIZE) {
-    throw new MeshyApiError("The model must be a non-empty GLB smaller than 100 MB.", 413);
-  }
-  if (input.modelBytes.toString("ascii", 0, 4) !== "glTF") {
-    throw new MeshyApiError("Texture generation currently supports GLB models only.", 415);
-  }
-
-  const prompt = input.prompt.trim();
-  if (!prompt) {
-    throw new MeshyApiError("Describe the texture you want to generate.", 400);
-  }
-  if (!isTextureStylePreset(input.stylePreset)) {
-    throw new MeshyApiError("Choose a valid texture style preset.", 400);
+  if (
+    (!input.inputTaskId && !getSecureUrl(input.modelUrl)) ||
+    (input.inputTaskId && input.modelUrl)
+  ) {
+    throw new MeshyApiError(
+      "Texture generation requires either a completed Meshy task or one uploaded GLB.",
+      400,
+    );
   }
 
-  const textStylePrompt = `${prompt}. ${TEXTURE_STYLE_PRESETS[input.stylePreset]}`;
-  if (textStylePrompt.length > MAX_PROMPT_LENGTH) {
-    throw new MeshyApiError("The texture description is too long.", 400);
+  const requestedImageUrls = input.imageUrls ?? [];
+  const imageUrls = requestedImageUrls
+    .map((url) => getSecureUrl(url))
+    .filter((url): url is string => Boolean(url));
+  const usingPhotos = requestedImageUrls.length > 0;
+  if (usingPhotos && (imageUrls.length !== requestedImageUrls.length || imageUrls.length > 4)) {
+    throw new MeshyApiError("Provide one to four valid source photo URLs.", 400);
+  }
+  if (usingPhotos && (input.prompt?.trim() || input.stylePreset)) {
+    throw new MeshyApiError("Choose either a texture description or source photos.", 400);
   }
 
-  const modelUrl = `data:application/octet-stream;base64,${input.modelBytes.toString("base64")}`;
+  let styleFields: Record<string, unknown>;
+  if (usingPhotos) {
+    styleFields = {
+      multiview_image_urls: imageUrls,
+      ai_model: "meshy-7",
+      enable_pbr: true,
+      texture_resolution: "2k",
+    };
+  } else {
+    const prompt = input.prompt?.trim() ?? "";
+    if (!prompt) {
+      throw new MeshyApiError("Describe the texture you want to generate.", 400);
+    }
+    if (!input.stylePreset || !isTextureStylePreset(input.stylePreset)) {
+      throw new MeshyApiError("Choose a valid texture style preset.", 400);
+    }
+
+    const textStylePrompt = `${prompt}. ${TEXTURE_STYLE_PRESETS[input.stylePreset]}`;
+    if (textStylePrompt.length > MAX_PROMPT_LENGTH) {
+      throw new MeshyApiError("The texture description is too long.", 400);
+    }
+    styleFields = {
+      text_style_prompt: textStylePrompt,
+      ai_model: "latest",
+      enable_pbr: true,
+      texture_resolution: "2k",
+    };
+  }
+
   const response = await fetchMeshy("/retexture", {
     method: "POST",
     body: JSON.stringify({
-      model_url: modelUrl,
-      text_style_prompt: textStylePrompt,
-      ai_model: "latest",
+      ...(input.inputTaskId
+        ? { input_task_id: input.inputTaskId }
+        : { model_url: input.modelUrl }),
+      ...styleFields,
       enable_original_uv: true,
-      enable_pbr: true,
-      texture_resolution: "2k",
       target_formats: ["glb"],
     }),
   });

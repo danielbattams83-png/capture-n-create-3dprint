@@ -1,12 +1,27 @@
 "use client";
 
-import { Check, LoaderCircle, Paintbrush, Sparkles } from "lucide-react";
+import Image from "next/image";
+import { Check, ImageIcon, LoaderCircle, Paintbrush, Sparkles } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { uploadTemporaryFiles } from "@/lib/client-blob-upload";
+
+type TextureSourceImage = {
+  file: File;
+  previewUrl: string;
+};
 
 type TextureGeneratorProps = {
   model: Blob;
+  sourceImages?: TextureSourceImage[];
+  sourceTask?: {
+    taskId: string;
+    taskType: "image-to-3d" | "multi-image-to-3d";
+    taskToken: string;
+  };
   onTextureReady: (model: Blob) => void | Promise<void>;
 };
+
+type TextureMode = "prompt" | "photo";
 
 type TextureStatus = "idle" | "submitting" | "generating" | "applying" | "done" | "error";
 
@@ -54,8 +69,11 @@ function wait(milliseconds: number, signal: AbortSignal): Promise<void> {
 
 export default function TextureGenerator({
   model,
+  sourceImages = [],
+  sourceTask,
   onTextureReady,
 }: TextureGeneratorProps) {
+  const [mode, setMode] = useState<TextureMode>("prompt");
   const [prompt, setPrompt] = useState("");
   const [stylePreset, setStylePreset] = useState("realistic");
   const [status, setStatus] = useState<TextureStatus>("idle");
@@ -69,7 +87,9 @@ export default function TextureGenerator({
 
   const generateTexture = async () => {
     const trimmedPrompt = prompt.trim();
-    if (!trimmedPrompt || status === "submitting" || status === "generating") return;
+    const usingPhoto = mode === "photo";
+    if (usingPhoto ? sourceImages.length === 0 : !trimmedPrompt) return;
+    if (status === "submitting" || status === "generating" || status === "applying") return;
 
     activeRequest.current?.abort();
     const controller = new AbortController();
@@ -79,17 +99,47 @@ export default function TextureGenerator({
     setError("");
 
     try {
-      const formData = new FormData();
-      formData.append(
-        "model",
-        new File([model], "active-model.glb", { type: "model/gltf-binary" }),
-      );
-      formData.append("prompt", trimmedPrompt);
-      formData.append("style_preset", stylePreset);
+      const photoUpload = usingPhoto
+        ? await uploadTemporaryFiles({
+            files: sourceImages.map(({ file }) => file),
+            kind: "image",
+            signal: controller.signal,
+            onProgress: setProgress,
+          })
+        : null;
+      const modelSource = sourceTask
+        ? {
+            input_task_id: sourceTask.taskId,
+            input_task_type: sourceTask.taskType,
+            source_task_token: sourceTask.taskToken,
+          }
+        : await uploadTemporaryFiles({
+            files: [
+              new File([model], "active-model.glb", { type: "model/gltf-binary" }),
+            ],
+            kind: "model",
+            signal: controller.signal,
+            onProgress: setProgress,
+          }).then((uploaded) => ({
+            model_url: uploaded.urls[0],
+            upload_authorization: uploaded.authorization,
+          }));
 
       const createResponse = await fetch("/api/meshy-texture", {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...modelSource,
+          ...(photoUpload
+            ? {
+                image_urls: photoUpload.urls,
+                image_upload_authorization: photoUpload.authorization,
+              }
+            : {
+                prompt: trimmedPrompt,
+                style_preset: stylePreset,
+              }),
+        }),
         signal: controller.signal,
       });
       const createResult = await readJson(createResponse);
@@ -115,8 +165,8 @@ export default function TextureGenerator({
       };
       setStatus("generating");
 
-      for (let attempt = 0; attempt < 300; attempt += 1) {
-        if (attempt > 0) await wait(2000, controller.signal);
+      for (let attempt = 0; attempt < 720; attempt += 1) {
+        if (attempt > 0) await wait(5000, controller.signal);
         const statusResponse = await fetch("/api/meshy-texture/status", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -125,6 +175,7 @@ export default function TextureGenerator({
         });
         const statusResult = await readJson(statusResponse);
         if (!statusResponse.ok) {
+          if (statusResponse.status >= 500) continue;
           throw new Error(
             getResponseError(statusResult) ?? "Texture progress could not be checked.",
           );
@@ -177,7 +228,9 @@ export default function TextureGenerator({
         return;
       }
 
-      throw new Error("Texture generation took too long. Please try again.");
+      throw new Error(
+        "Texture generation is still running after one hour. Keep the task ID and check it again later.",
+      );
     } catch (generationError) {
       if (generationError instanceof Error && generationError.name === "AbortError") return;
       setError(
@@ -208,11 +261,81 @@ export default function TextureGenerator({
             Generate Texture
           </h3>
           <p className="mt-1 text-xs leading-5 text-[#9ca3af]">
-            Describe a new surface for the active model. Generation uses Meshy credits.
+            Describe a surface, or apply the uploaded or captured photos. Generation uses Meshy credits.
           </p>
         </div>
       </div>
 
+      <div
+        className="mt-4 grid grid-cols-2 gap-1 rounded-xl bg-[#0b0d10] p-1"
+        role="group"
+        aria-label="Texture source"
+      >
+        {(
+          [
+            { value: "prompt", label: "Describe" },
+            { value: "photo", label: "From photo" },
+          ] as const
+        ).map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={mode === option.value}
+            disabled={busy}
+            onClick={() => {
+              setMode(option.value);
+              if (status === "done" || status === "error") setStatus("idle");
+              setError("");
+            }}
+            className={`h-9 rounded-lg text-xs font-semibold transition disabled:opacity-60 ${
+              mode === option.value
+                ? "bg-[#1d2d48] text-[#dbeafe]"
+                : "text-[#9ca3af] hover:text-[#d7dde5]"
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+
+      {mode === "photo" ? (
+        <div className="mt-4">
+          <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[#9ca3af]">
+            Source photos
+          </p>
+          {sourceImages.length > 0 ? (
+            <>
+              <p className="mt-1 text-xs leading-5 text-[#9ca3af]">
+                The first photo is the front view. Any others add angles of the same object.
+              </p>
+              <ul className="mt-3 grid grid-cols-4 gap-2">
+                {sourceImages.map((image, index) => (
+                  <li key={image.previewUrl} className="relative aspect-square overflow-hidden rounded-lg">
+                    <Image
+                      src={image.previewUrl}
+                      alt={image.file.name || `Source photo ${index + 1}`}
+                      fill
+                      unoptimized
+                      className="object-cover"
+                      sizes="80px"
+                    />
+                    {index === 0 && (
+                      <span className="absolute bottom-1 left-1 rounded bg-[#0b0d10]/80 px-1.5 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-[0.08em] text-[#dbeafe]">
+                        Front
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <p className="mt-2 flex items-start gap-2 text-xs leading-5 text-[#9ca3af]">
+              <ImageIcon aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+              Upload or take a photo first. Those images can be used as this model&apos;s texture.
+            </p>
+          )}
+        </div>
+      ) : (
       <label className="mt-4 block">
         <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[#9ca3af]">
           Texture prompt
@@ -230,27 +353,34 @@ export default function TextureGenerator({
           className="mt-2 w-full resize-none rounded-xl border border-[#303946] bg-[#0b0d10] px-3.5 py-3 text-sm text-white outline-none transition placeholder:text-[#626b76] focus:border-[#60a5fa] disabled:opacity-60"
         />
       </label>
+      )}
 
       <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
-        <label>
-          <span className="sr-only">Texture style preset</span>
-          <select
-            value={stylePreset}
-            onChange={(event) => setStylePreset(event.target.value)}
-            disabled={busy}
-            className="h-11 w-full rounded-xl border border-[#303946] bg-[#0b0d10] px-3 text-sm text-[#d8dce1] outline-none focus:border-[#60a5fa] disabled:opacity-60"
-          >
-            {STYLE_PRESETS.map((preset) => (
-              <option key={preset.value} value={preset.value}>
-                {preset.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        {mode === "prompt" ? (
+          <label>
+            <span className="sr-only">Texture style preset</span>
+            <select
+              value={stylePreset}
+              onChange={(event) => setStylePreset(event.target.value)}
+              disabled={busy}
+              className="h-11 w-full rounded-xl border border-[#303946] bg-[#0b0d10] px-3 text-sm text-[#d8dce1] outline-none focus:border-[#60a5fa] disabled:opacity-60"
+            >
+              {STYLE_PRESETS.map((preset) => (
+                <option key={preset.value} value={preset.value}>
+                  {preset.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <p className="self-center text-xs leading-5 text-[#9ca3af]">
+            Applies the color and surface from your photos.
+          </p>
+        )}
         <button
           type="button"
           onClick={() => void generateTexture()}
-          disabled={busy || !prompt.trim()}
+          disabled={busy || (mode === "photo" ? sourceImages.length === 0 : !prompt.trim())}
           className="flex h-11 items-center justify-center gap-2 rounded-xl bg-[#2563eb] px-5 text-sm font-semibold text-white transition hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:bg-[#303946] disabled:text-[#8993a0]"
         >
           {busy ? (
@@ -267,8 +397,12 @@ export default function TextureGenerator({
               : status === "applying"
                 ? "Applying…"
                 : status === "done"
-                  ? "Generate another"
-                  : "Generate"}
+                  ? mode === "photo"
+                    ? "Apply again"
+                    : "Generate another"
+                  : mode === "photo"
+                    ? "Apply photos"
+                    : "Generate"}
         </button>
       </div>
 
@@ -277,7 +411,13 @@ export default function TextureGenerator({
           <div className="mb-2 flex items-center justify-between text-[11px] text-[#aeb6c0]">
             <span>
               {status === "submitting"
-                ? "Uploading model…"
+                ? mode === "photo"
+                  ? sourceTask
+                    ? "Uploading photos…"
+                    : "Uploading photos and model…"
+                  : sourceTask
+                    ? "Preparing model…"
+                    : "Uploading model…"
                 : status === "applying"
                   ? "Applying texture without moving the camera…"
                   : "Generating texture…"}

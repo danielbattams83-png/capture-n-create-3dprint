@@ -5,8 +5,9 @@ import {
   isRecord,
   isSameOrigin,
   MeshyApiError,
-  verifyTaskToken,
+  readTaskToken,
 } from "@/lib/meshy";
+import { deleteTemporaryBlobs } from "@/lib/blob-uploads";
 
 const taskStatuses = new Set(["PENDING", "IN_PROGRESS", "SUCCEEDED", "FAILED", "CANCELED"]);
 
@@ -47,7 +48,8 @@ export async function POST(request: Request) {
   if (body.task_id.length > 256) {
     return NextResponse.json({ error: "The task_id is too long." }, { status: 400 });
   }
-  if (!verifyTaskToken(body.task_id.trim(), body.task_type, body.task_token)) {
+  const token = readTaskToken(body.task_id.trim(), body.task_type, body.task_token);
+  if (!token) {
     return NextResponse.json({ error: "Invalid task token." }, { status: 403 });
   }
 
@@ -70,6 +72,7 @@ export async function POST(request: Request) {
         : 0;
 
     if (task.status === "FAILED" || task.status === "CANCELED") {
+      await deleteTemporaryBlobs(token.blobUrls);
       const taskError = getErrorMessage(task.task_error);
       return NextResponse.json({
         task_id: body.task_id,
@@ -84,6 +87,7 @@ export async function POST(request: Request) {
     }
 
     if (task.status === "SUCCEEDED") {
+      await deleteTemporaryBlobs(token.blobUrls);
       const modelUrls = isRecord(task.model_urls) ? task.model_urls : {};
       const glb = getSecureModelUrl(modelUrls.glb);
       const stl = getSecureModelUrl(modelUrls.stl);

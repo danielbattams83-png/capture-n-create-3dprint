@@ -3,9 +3,10 @@ import {
   isRecord,
   isSameOrigin,
   MeshyApiError,
-  verifyTaskToken,
+  readTaskToken,
 } from "@/lib/meshy";
 import { getRetextureTask } from "@/lib/meshyService";
+import { deleteTemporaryBlobs } from "@/lib/blob-uploads";
 
 export async function POST(request: Request) {
   if (!isSameOrigin(request)) {
@@ -35,12 +36,20 @@ export async function POST(request: Request) {
     );
   }
   const taskId = body.task_id.trim();
-  if (!verifyTaskToken(taskId, "retexture", body.task_token)) {
+  const token = readTaskToken(taskId, "retexture", body.task_token);
+  if (!token) {
     return NextResponse.json({ error: "Invalid task token." }, { status: 403 });
   }
 
   try {
     const task = await getRetextureTask(taskId);
+    if (
+      task.status === "SUCCEEDED" ||
+      task.status === "FAILED" ||
+      task.status === "CANCELED"
+    ) {
+      await deleteTemporaryBlobs(token.blobUrls);
+    }
     return NextResponse.json({
       task_id: task.id,
       status: task.status,

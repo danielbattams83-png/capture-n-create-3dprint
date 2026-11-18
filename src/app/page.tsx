@@ -12,6 +12,7 @@ import GenerationModal from "@/components/generation-modal";
 import ImagePreprocessingModal from "@/components/image-preprocessing-modal";
 import type { ProcessedImageReview } from "@/components/image-preprocessing-modal";
 import TextureGenerator from "@/components/texture-generator";
+import { uploadTemporaryFiles } from "@/lib/client-blob-upload";
 import { isolateAndCropSubject } from "@/lib/image-preprocessing";
 import { fetchKhronosAssets, type KhronosAsset } from "@/lib/khronos-assets";
 import {
@@ -111,6 +112,7 @@ export function Studio({
   const [activeModelName, setActiveModelName] = useState("");
   const [previewError, setPreviewError] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [textureSourceTask, setTextureSourceTask] = useState<PreviewTask | null>(null);
   const [exportModel, setExportModel] = useState<ModelExportAction | null>(null);
   const [, setCreationsRefreshKey] = useState(0);
   const [editingCreationId, setEditingCreationId] = useState<string | null>(null);
@@ -330,18 +332,26 @@ export function Studio({
     setCatalogSaveStatus("idle");
     setEditingCreationId(null);
     previewTask.current = null;
+    setTextureSourceTask(null);
     setExportModel(null);
     setProgress(0);
     setFailedStage(null);
     setStatus("uploading");
 
     try {
-      const formData = new FormData();
-      selectedImages.forEach(({ file }) => formData.append("images", file));
+      const uploaded = await uploadTemporaryFiles({
+        files: selectedImages.map(({ file }) => file),
+        kind: "image",
+        signal: controller.signal,
+      });
 
       const createResponse = await fetch("/api/generate-3d", {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          image_urls: uploaded.urls,
+          upload_authorization: uploaded.authorization,
+        }),
         signal: controller.signal,
       });
       const createResult = await readJson(createResponse);
@@ -376,10 +386,11 @@ export function Studio({
         },
       };
       previewTask.current = task;
+      setTextureSourceTask(task);
       activeStage = "generating";
       setStatus("generating");
 
-      for (let pollAttempt = 0; pollAttempt < 180; pollAttempt += 1) {
+      for (let pollAttempt = 0; pollAttempt < 720; pollAttempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 5000));
         if (controller.signal.aborted) return;
 
@@ -395,6 +406,7 @@ export function Studio({
         });
         const pollResult = await readJson(pollResponse);
         if (!pollResponse.ok) {
+          if (pollResponse.status >= 500) continue;
           throw new Error(getApiError(pollResult) ?? "Could not check the generation status.");
         }
         if (!isRecord(pollResult) || typeof pollResult.status !== "string") {
@@ -428,7 +440,9 @@ export function Studio({
         }
       }
 
-      throw new Error("Model generation timed out. Please try again.");
+      throw new Error(
+        "Model generation is still running after one hour. Keep the task details and check again later.",
+      );
     } catch (generationError) {
       if (controller.signal.aborted) return;
       setError(
@@ -543,6 +557,7 @@ export function Studio({
     setPreviewError("");
     setPreviewLoading(false);
     previewTask.current = null;
+    setTextureSourceTask(null);
     setExportModel(null);
     setProgress(0);
     setFailedStage(null);
@@ -581,6 +596,7 @@ export function Studio({
     setPreviewError("");
     setPreviewLoading(false);
     previewTask.current = null;
+    setTextureSourceTask(null);
     setExportModel(null);
     setEditingCreationId(null);
   };
@@ -629,6 +645,7 @@ export function Studio({
     setPreviewError("");
     setPreviewLoading(false);
     previewTask.current = null;
+    setTextureSourceTask(null);
     setExportModel(null);
     setEditingCreationId(null);
     setCatalogModel(null);
@@ -662,6 +679,7 @@ export function Studio({
     setProgress(100);
     setStatus("ready");
     previewTask.current = null;
+    setTextureSourceTask(null);
     window.setTimeout(
       () =>
         document
@@ -705,6 +723,7 @@ export function Studio({
       setProgress(100);
       setStatus("ready");
       previewTask.current = null;
+      setTextureSourceTask(null);
       window.setTimeout(
         () =>
           document
@@ -749,6 +768,8 @@ export function Studio({
 
   const applyGeneratedTexture = async (texturedModel: Blob) => {
     const modelUrl = URL.createObjectURL(texturedModel);
+    previewTask.current = null;
+    setTextureSourceTask(null);
     setPreviewModelUrl(modelUrl);
     setModelUrls({ glb: modelUrl });
     setActiveModelBlob(texturedModel);
@@ -1262,6 +1283,8 @@ export function Studio({
                 <div id="texture-studio" className="scroll-mt-40">
                   <TextureGenerator
                     model={activeModelBlob}
+                    sourceImages={images}
+                    sourceTask={textureSourceTask ?? undefined}
                     onTextureReady={applyGeneratedTexture}
                   />
                 </div>

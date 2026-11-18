@@ -36,20 +36,70 @@ export function isSameOrigin(request: Request): boolean {
 
 export type MeshyTaskType = "image-to-3d" | "multi-image-to-3d" | "retexture";
 
-export function createTaskToken(taskId: string, taskType: MeshyTaskType): string {
+export type MeshyTaskTokenPayload = {
+  taskId: string;
+  taskType: MeshyTaskType;
+  blobUrls: string[];
+  exp: number;
+};
+
+function getTaskTokenSignature(payload: string): string {
   const apiKey = process.env.MESHY_API_KEY;
   if (!apiKey) {
     throw new MeshyApiError("Image generation is not configured. Check the server environment.", 500);
   }
-  return createHmac("sha256", apiKey).update(`${taskType}:${taskId}`).digest("hex");
+  return createHmac("sha256", apiKey).update(payload).digest("base64url");
+}
+
+export function createTaskToken(
+  taskId: string,
+  taskType: MeshyTaskType,
+  blobUrls: string[] = [],
+): string {
+  const payload = Buffer.from(
+    JSON.stringify({
+      taskId,
+      taskType,
+      blobUrls,
+      exp: Date.now() + 24 * 60 * 60 * 1000,
+    } satisfies MeshyTaskTokenPayload),
+  ).toString("base64url");
+  return `${payload}.${getTaskTokenSignature(payload)}`;
+}
+
+export function readTaskToken(
+  taskId: string,
+  taskType: MeshyTaskType,
+  token: string,
+): MeshyTaskTokenPayload | null {
+  const [payload, signature, extra] = token.split(".");
+  if (!payload || !signature || extra) return null;
+  const expected = Buffer.from(getTaskTokenSignature(payload));
+  const provided = Buffer.from(signature);
+  if (expected.length !== provided.length || !timingSafeEqual(expected, provided)) return null;
+
+  try {
+    const decoded = JSON.parse(
+      Buffer.from(payload, "base64url").toString("utf8"),
+    ) as Partial<MeshyTaskTokenPayload>;
+    if (
+      decoded.taskId !== taskId ||
+      decoded.taskType !== taskType ||
+      !Array.isArray(decoded.blobUrls) ||
+      decoded.blobUrls.some((url) => typeof url !== "string") ||
+      typeof decoded.exp !== "number" ||
+      decoded.exp <= Date.now()
+    ) {
+      return null;
+    }
+    return decoded as MeshyTaskTokenPayload;
+  } catch {
+    return null;
+  }
 }
 
 export function verifyTaskToken(taskId: string, taskType: MeshyTaskType, token: string): boolean {
-  if (!/^[\da-f]{64}$/i.test(token)) return false;
-
-  const expected = Buffer.from(createTaskToken(taskId, taskType), "hex");
-  const provided = Buffer.from(token, "hex");
-  return timingSafeEqual(expected, provided);
+  return readTaskToken(taskId, taskType, token) !== null;
 }
 
 export function getErrorMessage(value: unknown): string | undefined {
